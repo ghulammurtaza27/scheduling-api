@@ -20,10 +20,46 @@ router.post('/', [
   body('consultant_id').isUUID().notEmpty(),
   body('start_time').isISO8601().notEmpty(),
   body('end_time').isISO8601().notEmpty(),
+  body('start_time').custom((value, { req }) => {
+    if (new Date(value) < new Date()) {
+      throw new Error('Start time must be in the future');
+    }
+    return true;
+  }),
+  body('end_time').custom((value, { req }) => {
+    if (new Date(value) <= new Date(req.body.start_time)) {
+      throw new Error('End time must be after start time');
+    }
+    return true;
+  }),
   body('recurring.frequency').optional().isIn(['weekly', 'monthly']),
-  body('recurring.day_of_week').optional().isInt({ min: 0, max: 6 }),
-  body('recurring.day_of_month').optional().isInt({ min: 1, max: 31 }),
-  body('recurring.until').optional().isISO8601(),
+  body('recurring.day_of_week')
+    .optional()
+    .isInt({ min: 0, max: 6 })
+    .custom((value, { req }) => {
+      if (req.body.recurring?.frequency === 'weekly' && value === undefined) {
+        throw new Error('day_of_week is required for weekly recurring slots');
+      }
+      return true;
+    }),
+  body('recurring.day_of_month')
+    .optional()
+    .isInt({ min: 1, max: 31 })
+    .custom((value, { req }) => {
+      if (req.body.recurring?.frequency === 'monthly' && value === undefined) {
+        throw new Error('day_of_month is required for monthly recurring slots');
+      }
+      return true;
+    }),
+  body('recurring.until')
+    .optional()
+    .isISO8601()
+    .custom((value, { req }) => {
+      if (new Date(value) <= new Date(req.body.start_time)) {
+        throw new Error('Until date must be after start time');
+      }
+      return true;
+    }),
   validateRequest
 ], async (req, res) => {
   const { consultant_id, start_time, end_time, recurring } = req.body;
@@ -100,10 +136,18 @@ router.get('/', [
   query('consultant_id').optional().isUUID(),
   query('date').optional().isDate(),
   query('month').optional().matches(/^\d{4}-(0[1-9]|1[0-2])$/),
-  query('start_date').optional().isDate(),
+  query('start_date')
+    .optional()
+    .isDate()
+    .custom((value, { req }) => {
+      if (value && req.query.end_date && value > req.query.end_date) {
+        throw new Error('Start date must be before end date');
+      }
+      return true;
+    }),
   query('end_date').optional().isDate(),
-  query('page').optional().isInt({ min: 1 }).toInt().default(1),
-  query('limit').optional().isInt({ min: 1, max: 100 }).toInt().default(20),
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 100 }),
   validateRequest
 ], async (req, res) => {
   const { 
@@ -151,11 +195,16 @@ router.get('/', [
       paramCount += 2;
     }
 
-    if (start_date && end_date) {
-      baseQuery += ` AND ts.start_time >= $${paramCount}
-                 AND ts.end_time <= $${paramCount + 1}`;
-      queryParams.push(start_date, end_date);
-      paramCount += 2;
+    if (start_date) {
+      baseQuery += ` AND DATE(ts.start_time) >= $${paramCount}`;
+      queryParams.push(start_date);
+      paramCount++;
+    }
+
+    if (end_date) {
+      baseQuery += ` AND ts.end_time <= $${paramCount}`;
+      queryParams.push(end_date);
+      paramCount++;
     }
 
     // Count total items
@@ -201,6 +250,32 @@ router.get('/', [
 router.post('/:slotId/reserve', [
   param('slotId').isUUID(),
   body('customer_id').isUUID().notEmpty(),
+  param('slotId').custom(async (value) => {
+    const slot = await pool.query(
+      'SELECT is_booked, start_time FROM time_slots WHERE id = $1',
+      [value]
+    );
+    if (slot.rows.length === 0) {
+      throw new Error('Time slot not found');
+    }
+    if (slot.rows[0].is_booked) {
+      throw new Error('Time slot is already booked');
+    }
+    if (new Date(slot.rows[0].start_time) < new Date()) {
+      throw new Error('Cannot book past time slots');
+    }
+    return true;
+  }),
+  body('customer_id').custom(async (value) => {
+    const customer = await pool.query(
+      'SELECT id FROM customers WHERE id = $1',
+      [value]
+    );
+    if (customer.rows.length === 0) {
+      throw new Error('Customer not found');
+    }
+    return true;
+  }),
   validateRequest
 ], async (req, res) => {
   const { customer_id } = req.body;
@@ -250,6 +325,22 @@ router.post('/:slotId/reserve', [
 // Delete a time slot
 router.delete('/:slotId', [
   param('slotId').isUUID(),
+  param('slotId').custom(async (value) => {
+    const slot = await pool.query(
+      'SELECT is_booked, start_time FROM time_slots WHERE id = $1',
+      [value]
+    );
+    if (slot.rows.length === 0) {
+      throw new Error('Time slot not found');
+    }
+    if (slot.rows[0].is_booked) {
+      throw new Error('Cannot delete booked time slots');
+    }
+    if (new Date(slot.rows[0].start_time) < new Date()) {
+      throw new Error('Cannot delete past time slots');
+    }
+    return true;
+  }),
   validateRequest
 ], async (req, res) => {
   const client = await pool.connect();
