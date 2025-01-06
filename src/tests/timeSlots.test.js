@@ -141,14 +141,11 @@ describe('Time Slots API', () => {
 
   afterAll(async () => {
     try {
-      // Clean up test database
-      await pool.query(`
-        DROP TABLE IF EXISTS time_slots;
-        DROP TABLE IF EXISTS recurring_patterns;
-        DROP TABLE IF EXISTS customers;
-        DROP TABLE IF EXISTS consultants;
-        DROP FUNCTION IF EXISTS create_recurring_slots;
-      `);
+      await pool.query('DROP TABLE IF EXISTS time_slots CASCADE');
+      await pool.query('DROP TABLE IF EXISTS recurring_patterns CASCADE');
+      await pool.query('DROP TABLE IF EXISTS customers CASCADE');
+      await pool.query('DROP TABLE IF EXISTS consultants CASCADE');
+      await pool.query('DROP FUNCTION IF EXISTS create_recurring_slots CASCADE');
     } finally {
       await pool.end();
     }
@@ -160,8 +157,8 @@ describe('Time Slots API', () => {
         .post('/api/time-slots')
         .send({
           consultant_id: mockConsultant.id,
-          start_time: '2024-03-01T14:00:00Z',
-          end_time: '2024-03-01T15:00:00Z'
+          start_time: new Date(Date.now() + 86400000).toISOString(), // Tomorrow
+          end_time: new Date(Date.now() + 90000000).toISOString() // Tomorrow + 1 hour
         });
 
       expect(response.status).toBe(201);
@@ -170,16 +167,20 @@ describe('Time Slots API', () => {
     });
 
     it('should create recurring time slots', async () => {
+      const startTime = new Date(Date.now() + 86400000);
+      const endTime = new Date(startTime.getTime() + 3600000);
+      const untilDate = new Date(startTime.getTime() + 2592000000); // 30 days later
+
       const response = await request(app)
         .post('/api/time-slots')
         .send({
           consultant_id: mockConsultant.id,
-          start_time: '2024-03-02T14:00:00Z',
-          end_time: '2024-03-02T15:00:00Z',
+          start_time: startTime.toISOString(),
+          end_time: endTime.toISOString(),
           recurring: {
             frequency: 'weekly',
-            day_of_week: 6,
-            until: '2024-04-02'
+            day_of_week: startTime.getDay(),
+            until: untilDate.toISOString()
           }
         });
 

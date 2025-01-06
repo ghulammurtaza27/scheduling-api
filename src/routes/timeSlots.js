@@ -122,9 +122,17 @@ router.post('/', [
     });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(400).json({
+    console.error('Time slot creation failed:', err);
+    
+    let statusCode = 400;
+    if (err.code === '23505') statusCode = 409; // Unique violation
+    if (err.code === '23503') statusCode = 404; // Foreign key violation
+    
+    res.status(statusCode).json({
       success: false,
-      error: err.message
+      error: err.message,
+      code: err.code,
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   } finally {
     client.release();
@@ -229,10 +237,10 @@ router.get('/', [
       data: {
         time_slots: result.rows,
         pagination: {
-          current_page: page,
+          current_page: parseInt(page),
           total_pages: totalPages,
           total_items: totalItems,
-          limit: limit
+          limit: parseInt(limit)
         }
       }
     });
