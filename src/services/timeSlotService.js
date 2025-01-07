@@ -3,22 +3,58 @@ const AppError = require('../utils/AppError');
 const { PAGINATION, TIME_SLOTS } = require('../config/constants');
 
 class TimeSlotService {
-  #validateTimeRange(start_time, end_time) {
-    const start = new Date(start_time);
-    const end = new Date(end_time);
+  #validateTimeRange(start_time, end_time, isRecurring = false) {
+    let start, end;
+
+    // Handle time-only format for recurring slots
+    if (isRecurring && start_time.includes(':') && !start_time.includes('T')) {
+      start = new Date();
+      end = new Date();
+      
+      const [startHour, startMinute] = start_time.split(':').map(Number);
+      const [endHour, endMinute] = end_time.split(':').map(Number);
+      
+      start.setUTCHours(startHour, startMinute, 0, 0);
+      end.setUTCHours(endHour, endMinute, 0, 0);
+      
+      // If end time is before start time, move end to next day
+      if (end <= start) {
+        end.setDate(end.getDate() + 1);
+      }
+
+      // For recurring slots, we only validate the time part, not the date
+      const now = new Date();
+      const currentTime = now.getUTCHours() * 60 + now.getUTCMinutes();
+      const startTime = startHour * 60 + startMinute;
+
+      if (startTime < currentTime && start.getDate() === now.getDate()) {
+        start.setDate(start.getDate() + 1);
+        end.setDate(end.getDate() + 1);
+      }
+    } else {
+      start = new Date(start_time);
+      end = new Date(end_time);
+    }
     
     if (start >= end) {
       throw new AppError('End time must be after start time', 400);
     }
 
-    if (start < new Date()) {
+    // Skip past time validation for recurring slots
+    if (!isRecurring && start < new Date()) {
       throw new AppError('Cannot create slots in the past', 400);
     }
 
     const durationMinutes = (end - start) / (1000 * 60);
     if (durationMinutes < TIME_SLOTS.MIN_DURATION_MINUTES) {
-      throw new AppError('minimum duration must be at least 30 minutes', 400);
+      throw new AppError(`Slot duration cannot be shorter than minimum duration (${TIME_SLOTS.MIN_DURATION_MINUTES} minutes)`, 400);
     }
+    
+    if (durationMinutes > TIME_SLOTS.MAX_DURATION_MINUTES) {
+      throw new AppError(`Slot duration cannot exceed maximum duration (${TIME_SLOTS.MAX_DURATION_MINUTES} minutes)`, 400);
+    }
+
+    return { start, end };
   }
 
   async getTimeSlots({ consultant_id, date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT }) {
@@ -101,16 +137,17 @@ class TimeSlotService {
     try {
       await client.query('BEGIN');
       
-      // Validate time range before any DB operations
-      this.#validateTimeRange(start_time, end_time);
+      // Pass isRecurring flag to validateTimeRange
+      const { start, end } = this.#validateTimeRange(start_time, end_time, !!recurring);
 
-      // Check for overlapping slots
+      // Check for overlapping slots with more precise detection
       const overlapCheck = await client.query(
         `SELECT id FROM time_slots 
          WHERE consultant_id = $1 
          AND NOT is_booked
-         AND ((start_time, end_time) OVERLAPS ($2::timestamp, $3::timestamp))`,
-        [consultant_id, start_time, end_time]
+         AND tsrange(start_time, end_time) && tsrange($2::timestamp, $3::timestamp)
+         AND NOT (start_time = $3::timestamp OR end_time = $2::timestamp)`,
+        [consultant_id, start.toISOString(), end.toISOString()]
       );
 
       if (overlapCheck.rows.length > 0) {
@@ -140,7 +177,7 @@ class TimeSlotService {
            (consultant_id, start_time, end_time, recurring_pattern_id)
            VALUES ($1, $2, $3, $4)
            RETURNING *`,
-          [consultant_id, start_time, end_time, pattern_id]
+          [consultant_id, start.toISOString(), end.toISOString(), pattern_id]
         );
 
         await client.query('COMMIT');
@@ -155,7 +192,7 @@ class TimeSlotService {
            (consultant_id, start_time, end_time)
            VALUES ($1, $2, $3)
            RETURNING *`,
-          [consultant_id, start_time, end_time]
+          [consultant_id, start.toISOString(), end.toISOString()]
         );
 
         await client.query('COMMIT');
@@ -167,7 +204,7 @@ class TimeSlotService {
       }
     } catch (err) {
       await client.query('ROLLBACK');
-      throw err; // Let the route handler handle the error
+      throw err;
     } finally {
       client.release();
     }

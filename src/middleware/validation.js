@@ -1,6 +1,5 @@
 const { body, query, param, validationResult } = require('express-validator');
 const pool = require('../config/database');
-const { PAGINATION } = require('../config/constants');
 const AppError = require('../utils/AppError');
 
 const timeSlotCreate = [
