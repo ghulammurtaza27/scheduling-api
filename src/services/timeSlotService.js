@@ -3,33 +3,80 @@ const AppError = require('../utils/AppError');
 const { PAGINATION, TIME_SLOTS } = require('../config/constants');
 
 class TimeSlotService {
-  #validateTimeRange(start_time, end_time, isRecurring = false) {
+  #validateTimeRange(start_time, end_time, recurring = null) {
     let start, end;
 
-    // Handle time-only format for recurring slots
-    if (isRecurring && start_time.includes(':') && !start_time.includes('T')) {
-      start = new Date();
-      end = new Date();
+    if (recurring && start_time.includes(':') && !start_time.includes('T')) {
+      const [startHours, startMinutes] = start_time.split(':').map(Number);
+      const [endHours, endMinutes] = end_time.split(':').map(Number);
       
-      const [startHour, startMinute] = start_time.split(':').map(Number);
-      const [endHour, endMinute] = end_time.split(':').map(Number);
+      const now = new Date();
       
-      start.setUTCHours(startHour, startMinute, 0, 0);
-      end.setUTCHours(endHour, endMinute, 0, 0);
-      
-      // If end time is before start time, move end to next day
-      if (end <= start) {
-        end.setDate(end.getDate() + 1);
+      // Handle different recurring patterns
+      if (recurring.frequency === 'weekly' && recurring.day_of_week !== undefined) {
+        const targetDay = recurring.day_of_week;
+        const currentDay = now.getUTCDay();
+        const daysToAdd = (targetDay - currentDay + 7) % 7;
+
+        // Create date in UTC
+        start = new Date(Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate() + daysToAdd,
+          startHours,
+          startMinutes,
+          0,
+          0
+        ));
+      } else if (recurring.frequency === 'monthly' && recurring.day_of_month !== undefined) {
+        // Create date in UTC
+        start = new Date(Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          recurring.day_of_month,
+          startHours,
+          startMinutes,
+          0,
+          0
+        ));
+        
+        if (start < now) {
+          start.setUTCMonth(start.getUTCMonth() + 1);
+        }
+      } else {
+        throw new AppError('Invalid recurring pattern', 400);
       }
 
-      // For recurring slots, we only validate the time part, not the date
-      const now = new Date();
-      const currentTime = now.getUTCHours() * 60 + now.getUTCMinutes();
-      const startTime = startHour * 60 + startMinute;
+      if (recurring.until) {
+        const untilDate = new Date(recurring.until);
+        if (untilDate <= now) {
+          throw new AppError('Until date must be in the future', 400);
+        }
+      }
 
-      if (startTime < currentTime && start.getDate() === now.getDate()) {
-        start.setDate(start.getDate() + 1);
-        end.setDate(end.getDate() + 1);
+      // Create end time in UTC
+      end = new Date(Date.UTC(
+        start.getUTCFullYear(),
+        start.getUTCMonth(),
+        start.getUTCDate(),
+        endHours,
+        endMinutes,
+        0,
+        0
+      ));
+
+      if (end < start) {
+        end.setUTCDate(end.getUTCDate() + 1);
+      }
+
+      if (start < now) {
+        if (recurring.frequency === 'weekly') {
+          start.setUTCDate(start.getUTCDate() + 7);
+          end.setUTCDate(end.getUTCDate() + 7);
+        } else {
+          start.setUTCMonth(start.getUTCMonth() + 1);
+          end.setUTCMonth(end.getUTCMonth() + 1);
+        }
       }
     } else {
       start = new Date(start_time);
@@ -40,8 +87,7 @@ class TimeSlotService {
       throw new AppError('End time must be after start time', 400);
     }
 
-    // Skip past time validation for recurring slots
-    if (!isRecurring && start < new Date()) {
+    if (!recurring && start < new Date()) {
       throw new AppError('Cannot create slots in the past', 400);
     }
 
@@ -143,29 +189,13 @@ class TimeSlotService {
     try {
       await client.query('BEGIN');
       
-      // Pass isRecurring flag to validateTimeRange
-      const { start, end } = this.#validateTimeRange(start_time, end_time, !!recurring);
-
-      // Check for overlapping slots with more precise detection
-      const overlapCheck = await client.query(
-        `SELECT id FROM time_slots 
-         WHERE consultant_id = $1 
-         AND NOT is_booked
-         AND tsrange(start_time, end_time) && tsrange($2::timestamp, $3::timestamp)
-         AND NOT (start_time = $3::timestamp OR end_time = $2::timestamp)`,
-        [consultant_id, start.toISOString(), end.toISOString()]
-      );
-
-      if (overlapCheck.rows.length > 0) {
-        throw new AppError('Time slot overlaps with existing slot', 400);
-      }
+      const { start, end } = this.#validateTimeRange(start_time, end_time, recurring);
+      
+      // Store dates as ISO strings
+      const startIso = start.toISOString();
+      const endIso = end.toISOString();
 
       if (recurring) {
-        const untilDate = new Date(recurring.until);
-        if (untilDate <= new Date()) {
-          throw new AppError('Recurring until date must be in the future', 400);
-        }
-
         // Create recurring pattern
         const patternResult = await client.query(
           `INSERT INTO recurring_patterns 
@@ -183,22 +213,7 @@ class TimeSlotService {
            (consultant_id, start_time, end_time, recurring_pattern_id)
            VALUES ($1, $2, $3, $4)
            RETURNING *`,
-          [consultant_id, start.toISOString(), end.toISOString(), pattern_id]
-        );
-
-        await client.query('COMMIT');
-        return {
-          status: 'success',
-          statusCode: 201,
-          data: result.rows[0]
-        };
-      } else {
-        const result = await client.query(
-          `INSERT INTO time_slots 
-           (consultant_id, start_time, end_time)
-           VALUES ($1, $2, $3)
-           RETURNING *`,
-          [consultant_id, start.toISOString(), end.toISOString()]
+          [consultant_id, startIso, endIso, pattern_id]
         );
 
         await client.query('COMMIT');
@@ -208,6 +223,35 @@ class TimeSlotService {
           data: result.rows[0]
         };
       }
+
+      // Check for overlapping slots
+      const overlapCheck = await client.query(
+        `SELECT id FROM time_slots 
+         WHERE consultant_id = $1 
+         AND NOT is_booked
+         AND tsrange(start_time, end_time) && tsrange($2::timestamp, $3::timestamp)
+         AND NOT (start_time = $3::timestamp OR end_time = $2::timestamp)`,
+        [consultant_id, startIso, endIso]
+      );
+
+      if (overlapCheck.rows.length > 0) {
+        throw new AppError('Time slot overlaps with existing slot', 400);
+      }
+
+      const result = await client.query(
+        `INSERT INTO time_slots 
+         (consultant_id, start_time, end_time)
+         VALUES ($1, $2, $3)
+         RETURNING *`,
+        [consultant_id, startIso, endIso]
+      );
+
+      await client.query('COMMIT');
+      return {
+        status: 'success',
+        statusCode: 201,
+        data: result.rows[0]
+      };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
