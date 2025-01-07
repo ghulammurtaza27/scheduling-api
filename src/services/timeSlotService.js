@@ -57,7 +57,7 @@ class TimeSlotService {
     return { start, end };
   }
 
-  async getTimeSlots({ consultant_id, date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT }) {
+  async getTimeSlots({ consultant_id, date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT, include_booked = false }) {
     try {
       // Ensure limit doesn't exceed maximum
       limit = Math.min(parseInt(limit) || PAGINATION.DEFAULT_LIMIT, PAGINATION.MAX_LIMIT);
@@ -74,6 +74,12 @@ class TimeSlotService {
         LEFT JOIN recurring_patterns rp ON ts.recurring_pattern_id = rp.id
         WHERE ts.start_time >= NOW()
       `;
+
+      // Only show available slots by default
+      if (!include_booked) {
+        baseQuery += ` AND ts.is_booked = false`;
+      }
+
       const queryParams = [];
       let paramCount = 1;
 
