@@ -11,4 +11,10 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production'
 });
 
+// Add error handler
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err);
+  process.exit(-1);
+});
+
 module.exports = pool;

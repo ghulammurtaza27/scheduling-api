@@ -1,260 +1,142 @@
 const express = require('express');
 const router = express.Router();
+const { param } = require('express-validator');
 const pool = require('../config/database');
-const { param, validationResult, body } = require('express-validator');
-const { timeSlotCreate, timeSlotQuery, slotReservation } = require('../middleware/validation');
-
-const validateRequest = (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ success: false, errors: errors.array() });
-  }
-  next();
-};
+const timeSlotService = require('../services/timeSlotService');
+const { validateRequest, timeSlotCreate, timeSlotQuery, slotReservation } = require('../middleware/validation');
 
 router.post('/', timeSlotCreate, validateRequest, async (req, res) => {
-  const { consultant_id, start_time, end_time, recurring } = req.body;
-  const client = await pool.connect();
-
   try {
-    await client.query('BEGIN');
-    let actualStartTime, actualEndTime;
+    const { consultant_id, start_time, end_time, recurring } = req.body;
 
-    if (recurring) {
-      const [startHours, startMinutes] = start_time.split(':');
-      const [endHours, endMinutes] = end_time.split(':');
+    // Handle time string format for recurring slots
+    let formattedStartTime = start_time;
+    let formattedEndTime = end_time;
+
+    if (recurring && start_time.includes(':')) {
+      // For recurring slots with time-only format (HH:mm)
+      const [startHour, startMinute] = start_time.split(':');
+      const [endHour, endMinute] = end_time.split(':');
       
-      actualStartTime = new Date();
-      actualEndTime = new Date();
-
+      // Use the first occurrence date based on recurring pattern
+      const firstDate = new Date();
       if (recurring.day_of_week !== undefined) {
-        const targetDay = recurring.day_of_week;
-        const currentDay = actualStartTime.getUTCDay();
-        const daysToAdd = (targetDay - currentDay + 7) % 7;
-        actualStartTime.setDate(actualStartTime.getDate() + daysToAdd);
-        actualEndTime.setDate(actualEndTime.getDate() + daysToAdd);
+        // Weekly pattern - find next occurrence of day_of_week
+        const daysUntilFirst = (recurring.day_of_week - firstDate.getDay() + 7) % 7;
+        firstDate.setDate(firstDate.getDate() + daysUntilFirst);
+      } else if (recurring.day_of_month !== undefined) {
+        // Monthly pattern - set to next occurrence of day_of_month
+        firstDate.setDate(recurring.day_of_month);
+        if (firstDate < new Date()) {
+          firstDate.setMonth(firstDate.getMonth() + 1);
+        }
       }
 
-      actualStartTime.setUTCHours(parseInt(startHours), parseInt(startMinutes), 0, 0);
-      actualEndTime.setUTCHours(parseInt(endHours), parseInt(endMinutes), 0, 0);
+      // Format the datetime strings
+      firstDate.setHours(parseInt(startHour), parseInt(startMinute), 0, 0);
+      formattedStartTime = firstDate.toISOString();
 
-      const recurringPattern = await client.query(
-        `INSERT INTO recurring_patterns 
-         (frequency, day_of_week, day_of_month, until_date)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id`,
-        [recurring.frequency, recurring.day_of_week, recurring.day_of_month, recurring.until]
-      );
-
-      await client.query(
-        `SELECT create_recurring_slots($1::uuid, $2::timestamp, $3::timestamp, $4::uuid, $5::timestamp)`,
-        [consultant_id, actualStartTime, actualEndTime, recurringPattern.rows[0].id, recurring.until]
-      );
-
-      result = await client.query(
-        `SELECT * FROM time_slots 
-         WHERE recurring_pattern_id = $1 
-         ORDER BY start_time ASC LIMIT 1`,
-        [recurringPattern.rows[0].id]
-      );
-    } else {
-      actualStartTime = new Date(start_time);
-      actualEndTime = new Date(end_time);
-
-      const overlapCheck = await client.query(
-        `SELECT * FROM time_slots
-         WHERE consultant_id = $1
-           AND (
-             (start_time <= $3 AND end_time > $2) OR
-             (start_time < $3 AND end_time >= $2) OR
-             (start_time >= $2 AND end_time <= $3)
-           )`,
-        [consultant_id, actualStartTime, actualEndTime]
-      );
-
-      if (overlapCheck.rows.length > 0) {
-        throw new Error('Time slot overlaps with existing slots');
-      }
-
-      result = await client.query(
-        `INSERT INTO time_slots 
-         (consultant_id, start_time, end_time)
-         VALUES ($1, $2, $3)
-         RETURNING *`,
-        [consultant_id, actualStartTime, actualEndTime]
-      );
+      firstDate.setHours(parseInt(endHour), parseInt(endMinute), 0, 0);
+      formattedEndTime = firstDate.toISOString();
     }
 
-    await client.query('COMMIT');
-    res.status(201).json({
+    const result = await timeSlotService.createTimeSlot(
+      consultant_id, 
+      formattedStartTime, 
+      formattedEndTime, 
+      recurring
+    );
+    
+    if (result.status === 'error') {
+      return res.status(result.statusCode).json({
+        success: false,
+        error: result.message
+      });
+    }
+
+    res.status(result.statusCode).json({
       success: true,
       message: recurring ? 'Recurring slots created' : 'Time slot created',
-      data: {
-        consultant_id,
-        start_time,
-        end_time,
-        recurring: recurring ? {
-          frequency: recurring.frequency,
-          day_of_week: recurring.day_of_week,
-          day_of_month: recurring.day_of_month,
-          until: recurring.until
-        } : null
-      }
+      data: result.data
     });
   } catch (err) {
-    await client.query('ROLLBACK');
+    console.error('Error creating time slot:', err);
     
-    let statusCode = 400;
+    let statusCode = err.statusCode || 400;
     if (err.code === '23505') statusCode = 409;
     if (err.code === '23503') statusCode = 404;
     
     res.status(statusCode).json({
       success: false,
-      error: err.message,
-      code: err.code,
-      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
-  } finally {
-    client.release();
-  }
-});
-
-router.get('/', timeSlotQuery, validateRequest, async (req, res) => {
-  const { 
-    consultant_id, 
-    date, 
-    month, 
-    start_date, 
-    end_date,
-    page = 1,
-    limit = 20
-  } = req.query;
-
-  try {
-    let baseQuery = `
-      SELECT ts.*, 
-             COALESCE(c.name, 'Unknown') as consultant_name,
-             rp.frequency,
-             rp.day_of_week,
-             rp.day_of_month
-      FROM time_slots ts
-      LEFT JOIN consultants c ON ts.consultant_id = c.id
-      LEFT JOIN recurring_patterns rp ON ts.recurring_pattern_id = rp.id
-      WHERE ts.is_booked = FALSE
-    `;
-    const queryParams = [];
-    let paramCount = 1;
-
-    if (consultant_id) {
-      baseQuery += ` AND ts.consultant_id = $${paramCount}`;
-      queryParams.push(consultant_id);
-      paramCount++;
-    }
-
-    if (date) {
-      baseQuery += ` AND DATE(ts.start_time) = $${paramCount}`;
-      queryParams.push(date);
-      paramCount++;
-    }
-
-    if (month) {
-      const [year, monthNum] = month.split('-');
-      baseQuery += ` AND EXTRACT(YEAR FROM ts.start_time) = $${paramCount}
-                 AND EXTRACT(MONTH FROM ts.start_time) = $${paramCount + 1}`;
-      queryParams.push(year, monthNum);
-      paramCount += 2;
-    }
-
-    if (start_date) {
-      baseQuery += ` AND DATE(ts.start_time) >= $${paramCount}`;
-      queryParams.push(start_date);
-      paramCount++;
-    }
-
-    if (end_date) {
-      baseQuery += ` AND ts.end_time <= $${paramCount}`;
-      queryParams.push(end_date);
-      paramCount++;
-    }
-
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM (${baseQuery}) AS count_query`,
-      queryParams
-    );
-
-    const totalItems = parseInt(countResult.rows[0].count);
-    const totalPages = Math.ceil(totalItems / limit);
-    const offset = (page - 1) * limit;
-    
-    const finalQuery = `${baseQuery} 
-      ORDER BY ts.start_time 
-      LIMIT ${limit} OFFSET ${offset}`;
-
-    const result = await pool.query(finalQuery, queryParams);
-
-    res.json({
-      success: true,
-      data: {
-        time_slots: result.rows,
-        pagination: {
-          current_page: parseInt(page),
-          total_pages: totalPages,
-          total_items: totalItems,
-          limit: parseInt(limit)
-        }
-      }
-    });
-  } catch (err) {
-    console.error('GET time slots failed:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch time slots',
-      details: err.message
+      error: err.message
     });
   }
 });
 
 router.post('/:slotId/reserve', slotReservation, validateRequest, async (req, res) => {
-  const { customer_id } = req.body;
-  const client = await pool.connect();
-  
   try {
-    await client.query('BEGIN');
-    
-    const checkResult = await client.query(
-      `SELECT * FROM time_slots
-       WHERE id = $1 AND is_booked = FALSE
-       FOR UPDATE`,
-      [req.params.slotId]
+    const result = await timeSlotService.reserveTimeSlot(
+      req.params.slotId,
+      req.body.customer_id
     );
-    
-    if (checkResult.rows.length === 0) {
-      throw new Error('Time slot is not available');
-    }
-    
-    const result = await client.query(
-      `UPDATE time_slots
-       SET is_booked = TRUE, 
-           customer_id = $1,
-           updated_at = NOW()
-       WHERE id = $2
-       RETURNING *`,
-      [customer_id, req.params.slotId]
-    );
-    
-    await client.query('COMMIT');
-    res.json({
+
+    res.status(result.statusCode).json({
       success: true,
-      data: result.rows[0]
+      data: result.data
     });
   } catch (err) {
-    await client.query('ROLLBACK');
-    res.status(400).json({
+    // Handle specific error types and status codes
+    let statusCode = err.statusCode || 500;
+    let errorMessage = err.message;
+
+    // Map specific error types to status codes
+    switch(true) {
+      case err.message === 'Customer not found':
+        statusCode = 404;
+        break;
+      case err.message === 'Time slot not found':
+        statusCode = 404;
+        break;
+      case err.code === '23503': // Foreign key violation
+        statusCode = 404;
+        errorMessage = 'Referenced record not found';
+        break;
+      case err.code === '23505': // Unique violation
+        statusCode = 409;
+        break;
+      case err.code === '22P02': // Invalid input syntax
+        statusCode = 400;
+        errorMessage = 'Invalid input format';
+        break;
+    }
+
+    res.status(statusCode).json({
       success: false,
-      details: err.message
+      error: errorMessage
     });
-  } finally {
-    client.release();
+  }
+});
+
+router.get('/', timeSlotQuery, validateRequest, async (req, res) => {
+  try {
+    const result = await timeSlotService.getTimeSlots(req.query);
+    
+    if (result.status === 'error') {
+      return res.status(result.statusCode).json({
+        success: false,
+        error: result.message
+      });
+    }
+
+    res.status(result.statusCode).json({
+      success: true,
+      data: result.data
+    });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({
+      success: false,
+      error: err.message
+    });
   }
 });
 
@@ -273,49 +155,25 @@ router.delete('/:slotId', [
   }),
   validateRequest
 ], async (req, res) => {
-  const client = await pool.connect();
-  
   try {
-    await client.query('BEGIN');
-
-    const slotCheck = await client.query(
-      `SELECT recurring_pattern_id FROM time_slots WHERE id = $1`,
-      [req.params.slotId]
-    );
-
-    if (!slotCheck.rows.length) {
-      throw new Error('Time slot not found');
+    const result = await timeSlotService.deleteTimeSlot(req.params.slotId);
+    
+    if (result.status === 'error') {
+      return res.status(result.statusCode).json({
+        success: false,
+        error: result.message
+      });
     }
 
-    if (slotCheck.rows[0].recurring_pattern_id) {
-      await client.query(
-        `DELETE FROM time_slots
-         WHERE recurring_pattern_id = $1
-           AND start_time >= NOW()
-           AND is_booked = FALSE`,
-        [slotCheck.rows[0].recurring_pattern_id]
-      );
-    } else {
-      await client.query(
-        `DELETE FROM time_slots 
-         WHERE id = $1 AND is_booked = FALSE`,
-        [req.params.slotId]
-      );
-    }
-
-    await client.query('COMMIT');
-    res.json({
+    res.status(result.statusCode).json({
       success: true,
-      message: 'Time slot(s) deleted successfully'
+      message: result.message
     });
   } catch (err) {
-    await client.query('ROLLBACK');
-    res.status(400).json({
+    res.status(err.statusCode || 400).json({
       success: false,
-      details: err.message
+      error: err.message
     });
-  } finally {
-    client.release();
   }
 });
 

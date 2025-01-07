@@ -373,4 +373,278 @@ describe('Time Slots API', () => {
       }
     });
   });
+
+  describe('Concurrency', () => {
+    let slotId;
+
+    beforeEach(async () => {
+      // Create a test slot first
+      const createResult = await pool.query(
+        `INSERT INTO time_slots 
+         (consultant_id, start_time, end_time)
+         VALUES ($1, $2, $3)
+         RETURNING id`,
+        [
+          mockConsultant.id,
+          new Date("2025-03-22T14:00:00Z"),
+          new Date("2025-03-22T15:00:00Z")
+        ]
+      );
+      
+      slotId = createResult.rows[0].id;
+    });
+
+    it('should handle concurrent reservations correctly', async () => {
+      // Simulate concurrent requests
+      const promises = Array(5).fill().map(() => 
+        request(app)
+          .post(`/api/time-slots/${slotId}/reserve`)
+          .send({ customer_id: mockCustomer.id })
+      );
+
+      const results = await Promise.all(promises);
+      
+      // Only one request should succeed
+      const successCount = results.filter(r => r.body.success === true).length;
+      expect(successCount).toBe(1);
+
+      // All other requests should fail
+      const failureCount = results.filter(r => r.body.success === false).length;
+      expect(failureCount).toBe(4);
+
+      // Verify the slot is actually booked
+      const finalState = await pool.query(
+        'SELECT is_booked, customer_id FROM time_slots WHERE id = $1',
+        [slotId]
+      );
+      
+      expect(finalState.rows[0].is_booked).toBe(true);
+      expect(finalState.rows[0].customer_id).toBe(mockCustomer.id);
+    });
+
+    afterEach(async () => {
+      // Clean up the test slot
+      await pool.query('DELETE FROM time_slots WHERE id = $1', [slotId]);
+    });
+  });
+
+  describe('Pagination and Filtering', () => {
+    beforeEach(async () => {
+      // Create multiple test slots
+      const slots = Array(150).fill().map((_, index) => ({
+        consultant_id: mockConsultant.id,
+        start_time: new Date(Date.UTC(2025, 3, 1 + Math.floor(index / 6), 8 + (index % 6))),
+        end_time: new Date(Date.UTC(2025, 3, 1 + Math.floor(index / 6), 9 + (index % 6)))
+      }));
+
+      for (const slot of slots) {
+        await pool.query(
+          `INSERT INTO time_slots (consultant_id, start_time, end_time)
+           VALUES ($1, $2, $3)`,
+          [slot.consultant_id, slot.start_time, slot.end_time]
+        );
+      }
+    });
+
+    it('should handle invalid page numbers', async () => {
+      const response = await request(app)
+        .get('/api/time-slots')
+        .query({ 
+          consultant_id: mockConsultant.id,
+          page: -1
+        });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should respect maximum page size', async () => {
+      const response = await request(app)
+        .get('/api/time-slots')
+        .query({ 
+          consultant_id: mockConsultant.id,
+          limit: 1000
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.data.time_slots.length).toBeLessThanOrEqual(100);
+    });
+
+    afterEach(async () => {
+      // Clean up test data
+      await pool.query('DELETE FROM time_slots WHERE consultant_id = $1', [mockConsultant.id]);
+    });
+  });
+
+  describe('Recurring Slots', () => {
+    it('should handle invalid recurring pattern', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id,
+          start_time: "16:00",
+          end_time: "17:00",
+          recurring: {
+            frequency: "invalid",
+            day_of_week: 8,
+            until: "2025-07-15T00:00:00Z"
+          }
+        });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should handle invalid day_of_week values', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id,
+          start_time: "14:00",
+          end_time: "15:00",
+          recurring: {
+            frequency: "weekly",
+            day_of_week: 8, // Invalid: days are 0-6
+            until: "2025-07-15T00:00:00Z"
+          }
+        });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should handle invalid until date (past)', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id,
+          start_time: "14:00",
+          end_time: "15:00",
+          recurring: {
+            frequency: "weekly",
+            day_of_week: 1,
+            until: "2020-07-15T00:00:00Z"
+          }
+        });
+
+      expect(response.status).toBe(400);
+    });
+  });
+
+  describe('Time Slot Creation', () => {
+    it('should reject slots with end time before start time', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id,
+          start_time: "2025-03-22T14:00:00Z",
+          end_time: "2025-03-22T13:00:00Z"
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('after start time');
+    });
+
+    it('should reject slots shorter than minimum duration', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id,
+          start_time: "2025-03-22T14:00:00Z",
+          end_time: "2025-03-22T14:15:00Z" // 15 minutes
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('minimum duration');
+    });
+  });
+
+  describe('Time Slot Reservation', () => {
+    let testSlotId;
+
+    beforeEach(async () => {
+      // Create a test slot
+      const createResult = await pool.query(
+        `INSERT INTO time_slots 
+         (consultant_id, start_time, end_time)
+         VALUES ($1, $2, $3)
+         RETURNING id`,
+        [
+          mockConsultant.id,
+          new Date("2025-03-22T14:00:00Z"),
+          new Date("2025-03-22T15:00:00Z")
+        ]
+      );
+      
+      testSlotId = createResult.rows[0].id;
+    });
+
+    it('should handle non-existent customer_id', async () => {
+      const response = await request(app)
+        .post(`/api/time-slots/${testSlotId}/reserve`)
+        .send({ customer_id: '00000000-0000-0000-0000-000000000000' });
+
+      expect(response.status).toBe(400);
+    });
+
+    afterEach(async () => {
+      await pool.query('DELETE FROM time_slots WHERE id = $1', [testSlotId]);
+    });
+  });
+
+  describe('Time Slot Filtering', () => {
+    it('should handle invalid date format', async () => {
+      const response = await request(app)
+        .get('/api/time-slots')
+        .query({ 
+          date: 'not-a-date'
+        });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should handle invalid month format', async () => {
+      const response = await request(app)
+        .get('/api/time-slots')
+        .query({ 
+          month: '2025-13' // Invalid month
+        });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('should return empty array for future date with no slots', async () => {
+      const response = await request(app)
+        .get('/api/time-slots')
+        .query({ 
+          date: '2030-01-01'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data.time_slots).toHaveLength(0);
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('should handle database connection errors gracefully', async () => {
+      // Temporarily break the database connection
+      const originalPool = pool.query;
+      pool.query = jest.fn().mockRejectedValue(new Error('Database connection lost'));
+
+      const response = await request(app)
+        .get('/api/time-slots');
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toBeTruthy();
+
+      // Restore the database connection
+      pool.query = originalPool;
+    });
+
+    it('should handle malformed UUID', async () => {
+      const response = await request(app)
+        .post('/api/time-slots/not-a-uuid/reserve')
+        .send({ customer_id: mockCustomer.id });
+
+      expect(response.status).toBe(400);
+    });
+  });
 });

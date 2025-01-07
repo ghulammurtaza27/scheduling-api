@@ -8,10 +8,11 @@ A REST API for managing consultant scheduling and appointments, supporting both 
 - Book appointments
 - View available time slots with filtering options
 - Delete time slots (single or recurring)
-- Pagination support
 - Transaction-based operations
-- Input validation
+- Input validation and sanitization
 - Overlap prevention
+- Error handling
+- Comprehensive testing
 
 ## Prerequisites
 
@@ -57,7 +58,24 @@ psql -U postgres -c "CREATE DATABASE timeslots"
 psql timeslots -f src/db/init.sql
 ```
 
-## API Endpoints
+## Running the Application
+
+Development:
+```bash
+npm run dev
+```
+
+Production:
+```bash
+npm start
+```
+
+Tests:
+```bash
+npm test
+```
+
+## API Documentation
 
 ### Time Slots
 
@@ -75,8 +93,8 @@ psql timeslots -f src/db/init.sql
     ```json
     {
         "consultant_id": "uuid",
-        "start_time": "2025-03-15T14:00:00Z",
-        "end_time": "2025-03-15T15:00:00Z",
+        "start_time": "15:00",  // Time-only format for recurring slots
+        "end_time": "16:00",
         "recurring": {
             "frequency": "weekly|monthly",
             "day_of_week": 0-6,  // for weekly
@@ -131,26 +149,18 @@ psql timeslots -f src/db/init.sql
 ```json
 {
     "success": false,
-    "error": "Error message",
-    "details": "Detailed error message"
+    "error": "Error message"
 }
 ```
-
-## Development
-
-The project uses:
-- Express.js for the API server
-- PostgreSQL for data storage
-- express-validator for input validation
-- Transaction support for data integrity
 
 ## Error Handling
 
 The API returns appropriate HTTP status codes:
 - 200: Success
 - 201: Created
-- 400: Bad Request
+- 400: Bad Request (Invalid input)
 - 404: Not Found
+- 409: Conflict (e.g., overlapping slots)
 - 500: Server Error
 
 ## Database Schema
@@ -174,6 +184,30 @@ The API returns appropriate HTTP status codes:
 - until_date (TIMESTAMP)
 - created_at (TIMESTAMP)
 - updated_at (TIMESTAMP)
+
+## Future Improvements
+
+- Authentication and authorization
+- Rate limiting
+- Caching for frequently accessed data
+- Advanced filtering options
+- Webhook notifications
+- Bulk operations
+- Metrics and monitoring
+
+## Testing
+
+The application includes:
+- Unit tests
+- Integration tests
+- Edge case handling
+- Concurrency tests
+- Validation tests
+
+Run tests with:
+```bash
+npm test
+```
 
 ## License
 
