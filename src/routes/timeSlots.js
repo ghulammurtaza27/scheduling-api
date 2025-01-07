@@ -18,20 +18,12 @@ const validateRequest = (req, res, next) => {
 // Create time slot(s) - supports both single and recurring
 router.post('/', [
   body('consultant_id').isUUID().notEmpty(),
-  body('start_time').isISO8601().notEmpty(),
-  body('end_time').isISO8601().notEmpty(),
-  body('start_time').custom((value, { req }) => {
-    if (new Date(value) < new Date()) {
-      throw new Error('Start time must be in the future');
-    }
-    return true;
-  }),
-  body('end_time').custom((value, { req }) => {
-    if (new Date(value) <= new Date(req.body.start_time)) {
-      throw new Error('End time must be after start time');
-    }
-    return true;
-  }),
+  body('start_time')
+    .matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+    .withMessage('start_time must be in HH:mm format'),
+  body('end_time')
+    .matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
+    .withMessage('end_time must be in HH:mm format'),
   body('recurring.frequency').optional().isIn(['weekly', 'monthly']),
   body('recurring.day_of_week')
     .optional()
@@ -42,24 +34,9 @@ router.post('/', [
       }
       return true;
     }),
-  body('recurring.day_of_month')
-    .optional()
-    .isInt({ min: 1, max: 31 })
-    .custom((value, { req }) => {
-      if (req.body.recurring?.frequency === 'monthly' && value === undefined) {
-        throw new Error('day_of_month is required for monthly recurring slots');
-      }
-      return true;
-    }),
   body('recurring.until')
     .optional()
-    .isISO8601()
-    .custom((value, { req }) => {
-      if (new Date(value) <= new Date(req.body.start_time)) {
-        throw new Error('Until date must be after start time');
-      }
-      return true;
-    }),
+    .isISO8601(),
   validateRequest
 ], async (req, res) => {
   const { consultant_id, start_time, end_time, recurring } = req.body;
@@ -68,9 +45,36 @@ router.post('/', [
   try {
     await client.query('BEGIN');
 
+    // Calculate actual start and end times
+    const now = new Date();
+    const [startHours, startMinutes] = start_time.split(':');
+    const [endHours, endMinutes] = end_time.split(':');
+    
+    const actualStartTime = new Date();
+    const actualEndTime = new Date();
+
+    if (recurring?.day_of_week !== undefined) {
+      // Calculate next occurrence of day_of_week
+      const targetDay = recurring.day_of_week;
+      const currentDay = actualStartTime.getUTCDay();
+      const daysToAdd = (targetDay - currentDay + 7) % 7;
+      actualStartTime.setDate(actualStartTime.getDate() + daysToAdd);
+      actualEndTime.setDate(actualEndTime.getDate() + daysToAdd);
+    }
+
+    actualStartTime.setUTCHours(parseInt(startHours), parseInt(startMinutes), 0, 0);
+    actualEndTime.setUTCHours(parseInt(endHours), parseInt(endMinutes), 0, 0);
+
+    // Validate times
+    if (actualStartTime < new Date()) {
+      throw new Error('Start time must be in the future');
+    }
+    if (actualEndTime <= actualStartTime) {
+      throw new Error('End time must be after start time');
+    }
+
     if (recurring) {
       try {
-        // Handle recurring time slots
         const recurringPattern = await client.query(
           `INSERT INTO recurring_patterns 
            (frequency, day_of_week, day_of_month, until_date)
@@ -80,18 +84,17 @@ router.post('/', [
            recurring.day_of_month, recurring.until]
         );
 
-        // Generate all instances of recurring slots up to until_date
         const pattern_id = recurringPattern.rows[0].id;
         await client.query(
           `SELECT create_recurring_slots($1::uuid, $2::timestamp, $3::timestamp, $4::uuid, $5::timestamp)`,
-          [consultant_id, start_time, end_time, pattern_id, recurring.until]
+          [consultant_id, actualStartTime, actualEndTime, pattern_id, recurring.until]
         );
       } catch (err) {
         console.error('Recurring slot creation failed:', err);
         throw err;
       }
     } else {
-      // Handle single time slot
+      // Check for overlaps
       const overlapCheck = await client.query(
         `SELECT * FROM time_slots
          WHERE consultant_id = $1
@@ -100,7 +103,7 @@ router.post('/', [
              (start_time < $3 AND end_time >= $2) OR
              (start_time >= $2 AND end_time <= $3)
            )`,
-        [consultant_id, start_time, end_time]
+        [consultant_id, actualStartTime, actualEndTime]
       );
 
       if (overlapCheck.rows.length > 0) {
@@ -111,14 +114,19 @@ router.post('/', [
         `INSERT INTO time_slots 
          (consultant_id, start_time, end_time)
          VALUES ($1, $2, $3)`,
-        [consultant_id, start_time, end_time]
+        [consultant_id, actualStartTime, actualEndTime]
       );
     }
 
     await client.query('COMMIT');
     res.status(201).json({
       success: true,
-      message: recurring ? 'Recurring slots created' : 'Time slot created'
+      message: recurring ? 'Recurring slots created' : 'Time slot created',
+      data: {
+        start_time: actualStartTime,
+        end_time: actualEndTime,
+        recurring
+      }
     });
   } catch (err) {
     await client.query('ROLLBACK');

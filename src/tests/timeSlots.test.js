@@ -60,35 +60,35 @@ describe('Time Slots API', () => {
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-      `);
 
-      // Create the function for recurring slots
-      await pool.query(`
+        -- Create the recurring slots function
         CREATE OR REPLACE FUNCTION create_recurring_slots(
           p_consultant_id UUID,
           p_start_time TIMESTAMP,
           p_end_time TIMESTAMP,
           p_pattern_id UUID,
           p_until_date TIMESTAMP
-        ) RETURNS void AS $$
+        ) RETURNS VOID AS $$
         DECLARE
-          v_current TIMESTAMP;
-          v_slot_duration INTERVAL;
-          v_frequency VARCHAR;
-          v_day_of_week INTEGER;
+          v_current_date TIMESTAMP;
+          v_pattern RECORD;
+          v_interval INTERVAL;
         BEGIN
           -- Get pattern details
-          SELECT frequency, day_of_week 
-          INTO v_frequency, v_day_of_week
-          FROM recurring_patterns 
-          WHERE id = p_pattern_id;
+          SELECT * INTO v_pattern FROM recurring_patterns WHERE id = p_pattern_id;
           
-          -- Calculate slot duration
-          v_slot_duration := p_end_time - p_start_time;
-          v_current := p_start_time;
+          -- Set initial date
+          v_current_date := p_start_time;
           
-          WHILE v_current <= p_until_date LOOP
-            -- Insert the time slot
+          -- Calculate interval based on frequency
+          IF v_pattern.frequency = 'weekly' THEN
+            v_interval := '1 week'::INTERVAL;
+          ELSE
+            v_interval := '1 month'::INTERVAL;
+          END IF;
+          
+          -- Create recurring slots
+          WHILE v_current_date <= p_until_date LOOP
             INSERT INTO time_slots (
               consultant_id,
               start_time,
@@ -96,23 +96,18 @@ describe('Time Slots API', () => {
               recurring_pattern_id
             ) VALUES (
               p_consultant_id,
-              v_current,
-              v_current + v_slot_duration,
+              v_current_date,
+              v_current_date + (p_end_time - p_start_time),
               p_pattern_id
             );
             
-            -- Increment the date based on frequency
-            IF v_frequency = 'weekly' THEN
-              v_current := v_current + INTERVAL '1 week';
-            ELSE
-              v_current := v_current + INTERVAL '1 month';
-            END IF;
+            v_current_date := v_current_date + v_interval;
           END LOOP;
         END;
         $$ LANGUAGE plpgsql;
       `);
 
-      // Insert test data with explicit UUID casting
+      // Insert test data
       await pool.query(
         `INSERT INTO consultants (id, name) 
          VALUES ($1::uuid, $2)`,
@@ -157,8 +152,8 @@ describe('Time Slots API', () => {
         .post('/api/time-slots')
         .send({
           consultant_id: mockConsultant.id,
-          start_time: new Date(Date.now() + 86400000).toISOString(), // Tomorrow
-          end_time: new Date(Date.now() + 90000000).toISOString() // Tomorrow + 1 hour
+          start_time: "16:00",
+          end_time: "17:00"
         });
 
       expect(response.status).toBe(201);
@@ -167,20 +162,16 @@ describe('Time Slots API', () => {
     });
 
     it('should create recurring time slots', async () => {
-      const startTime = new Date(Date.now() + 86400000);
-      const endTime = new Date(startTime.getTime() + 3600000);
-      const untilDate = new Date(startTime.getTime() + 2592000000); // 30 days later
-
       const response = await request(app)
         .post('/api/time-slots')
         .send({
           consultant_id: mockConsultant.id,
-          start_time: startTime.toISOString(),
-          end_time: endTime.toISOString(),
+          start_time: "16:00",
+          end_time: "17:00",
           recurring: {
-            frequency: 'weekly',
-            day_of_week: startTime.getDay(),
-            until: untilDate.toISOString()
+            frequency: "weekly",
+            day_of_week: 6,
+            until: "2025-07-15T00:00:00Z"
           }
         });
 
@@ -197,8 +188,8 @@ describe('Time Slots API', () => {
         .post('/api/time-slots')
         .send({
           consultant_id: mockConsultant.id,
-          start_time: '2024-03-01T14:00:00Z',
-          end_time: '2024-03-01T15:00:00Z'
+          start_time: "14:00",
+          end_time: "15:00"
         });
 
       const response = await request(app)
