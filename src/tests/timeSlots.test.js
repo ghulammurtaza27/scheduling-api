@@ -152,8 +152,8 @@ describe('Time Slots API', () => {
         .post('/api/time-slots')
         .send({
           consultant_id: mockConsultant.id,
-          start_time: "16:00",
-          end_time: "17:00"
+          start_time: "2025-03-22T13:00:00Z",
+          end_time: "2025-03-22T14:00:00Z"
         });
 
       expect(response.status).toBe(201);
@@ -188,8 +188,8 @@ describe('Time Slots API', () => {
         .post('/api/time-slots')
         .send({
           consultant_id: mockConsultant.id,
-          start_time: "14:00",
-          end_time: "15:00"
+          start_time: "2025-03-22T14:00:00Z",
+          end_time: "2025-03-22T15:00:00Z"
         });
 
       const response = await request(app)

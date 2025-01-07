@@ -18,12 +18,39 @@ const validateRequest = (req, res, next) => {
 // Create time slot(s) - supports both single and recurring
 router.post('/', [
   body('consultant_id').isUUID().notEmpty(),
-  body('start_time')
-    .matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
-    .withMessage('start_time must be in HH:mm format'),
-  body('end_time')
-    .matches(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)
-    .withMessage('end_time must be in HH:mm format'),
+  body('start_time').custom((value, { req }) => {
+    // For recurring slots, expect HH:mm format
+    if (req.body.recurring) {
+      if (!value.match(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)) {
+        throw new Error('start_time must be in HH:mm format for recurring slots');
+      }
+    } 
+    // For single slots, expect ISO8601
+    else {
+      if (!value.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/)) {
+        throw new Error('start_time must be in ISO8601 format for single slots');
+      }
+    }
+    return true;
+  }),
+  body('end_time').custom((value, { req }) => {
+    // For recurring slots, expect HH:mm format
+    if (req.body.recurring) {
+      if (!value.match(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/)) {
+        throw new Error('end_time must be in HH:mm format for recurring slots');
+      }
+    }
+    // For single slots, expect ISO8601
+    else {
+      if (!value.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/)) {
+        throw new Error('end_time must be in ISO8601 format for single slots');
+      }
+      if (new Date(value) <= new Date(req.body.start_time)) {
+        throw new Error('End time must be after start time');
+      }
+    }
+    return true;
+  }),
   body('recurring.frequency').optional().isIn(['weekly', 'monthly']),
   body('recurring.day_of_week')
     .optional()
@@ -45,25 +72,31 @@ router.post('/', [
   try {
     await client.query('BEGIN');
 
-    // Calculate actual start and end times
-    const now = new Date();
-    const [startHours, startMinutes] = start_time.split(':');
-    const [endHours, endMinutes] = end_time.split(':');
-    
-    const actualStartTime = new Date();
-    const actualEndTime = new Date();
+    let actualStartTime, actualEndTime;
 
-    if (recurring?.day_of_week !== undefined) {
-      // Calculate next occurrence of day_of_week
-      const targetDay = recurring.day_of_week;
-      const currentDay = actualStartTime.getUTCDay();
-      const daysToAdd = (targetDay - currentDay + 7) % 7;
-      actualStartTime.setDate(actualStartTime.getDate() + daysToAdd);
-      actualEndTime.setDate(actualEndTime.getDate() + daysToAdd);
+    if (recurring) {
+      // Handle recurring slots with HH:mm format
+      const [startHours, startMinutes] = start_time.split(':');
+      const [endHours, endMinutes] = end_time.split(':');
+      
+      actualStartTime = new Date();
+      actualEndTime = new Date();
+
+      if (recurring.day_of_week !== undefined) {
+        const targetDay = recurring.day_of_week;
+        const currentDay = actualStartTime.getUTCDay();
+        const daysToAdd = (targetDay - currentDay + 7) % 7;
+        actualStartTime.setDate(actualStartTime.getDate() + daysToAdd);
+        actualEndTime.setDate(actualEndTime.getDate() + daysToAdd);
+      }
+
+      actualStartTime.setUTCHours(parseInt(startHours), parseInt(startMinutes), 0, 0);
+      actualEndTime.setUTCHours(parseInt(endHours), parseInt(endMinutes), 0, 0);
+    } else {
+      // Handle single slots with ISO8601 format
+      actualStartTime = new Date(start_time);
+      actualEndTime = new Date(end_time);
     }
-
-    actualStartTime.setUTCHours(parseInt(startHours), parseInt(startMinutes), 0, 0);
-    actualEndTime.setUTCHours(parseInt(endHours), parseInt(endMinutes), 0, 0);
 
     // Validate times
     if (actualStartTime < new Date()) {
