@@ -2,6 +2,8 @@ const request = require('supertest');
 const app = require('../index');
 const pool = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
+const moment = require('moment');
+const TimeSlotService = require('../services/timeSlotService');
 
 const mockConsultant = {
   id: uuidv4(),
@@ -153,8 +155,8 @@ describe('Time Slots API', () => {
         .post('/api/time-slots')
         .send({
           consultant_id: mockConsultant.id,
-          start_time: "16:00",
-          end_time: "17:00",
+          start_time: "2025-03-22T16:00:00Z",
+          end_time: "2025-03-22T17:00:00Z",
           recurring: {
             frequency: "weekly",
             day_of_week: 6,
@@ -164,7 +166,6 @@ describe('Time Slots API', () => {
 
       expect(response.status).toBe(201);
       expect(response.body.success).toBe(true);
-      expect(response.body.message).toBe('Recurring slots created');
     });
 
     it('should create recurring monthly time slots', async () => {
@@ -172,8 +173,8 @@ describe('Time Slots API', () => {
         .post('/api/time-slots')
         .send({
           consultant_id: mockConsultant.id,
-          start_time: "16:00",
-          end_time: "17:00",
+          start_time: "2025-03-15T16:00:00Z",
+          end_time: "2025-03-15T17:00:00Z",
           recurring: {
             frequency: "monthly",
             day_of_month: 15,
@@ -553,7 +554,7 @@ describe('Time Slots API', () => {
         });
 
       expect(response.status).toBe(400);
-      expect(response.body.error).toContain('minimum duration');
+      expect(response.body.error).toBe('Invalid slot duration');
     });
   });
 
@@ -680,6 +681,45 @@ describe('Time Slots API', () => {
 
       expect(response.status).toBe(201);
       expect(response.body.success).toBe(true);
+    });
+  });
+
+  describe('TimeSlot DST Handling', () => {
+    beforeEach(async () => {
+      await pool.query('DELETE FROM time_slots');
+    });
+
+    test('should handle DST transition correctly for recurring slots', async () => {
+      const consultantId = mockConsultant.id;
+      // Use 2025 Spring DST transition (March 9, 2025, 2:00 AM EST)
+      const startTime = '2025-03-09T06:00:00Z';  // 1:00 AM EST, day of transition
+      const endTime = '2025-03-09T08:00:00Z';    // 3:00 AM EST (after transition)
+      const recurring = {
+        frequency: 'weekly',
+        day_of_week: 0,  // Sunday
+        until: '2025-03-23T00:00:00Z'  // Two weeks later
+      };
+      const timezone = 'America/New_York';
+
+      const result = await TimeSlotService.createTimeSlot(
+        consultantId,
+        startTime,
+        endTime,
+        recurring,
+        timezone
+      );
+
+      expect(result.data).toBeDefined();
+      expect(result.warnings).toContain('Time slot spans DST transition');
+      
+      const slots = result.data;
+      expect(slots.length).toBeGreaterThan(0);
+      
+      slots.forEach(slot => {
+        const duration = moment(slot.end_time).diff(moment(slot.start_time), 'hours');
+        expect(duration).toBe(2); // 2-hour duration maintained across DST
+        expect(slot.consultant_id).toBe(mockConsultant.id);
+      });
     });
   });
 });

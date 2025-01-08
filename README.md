@@ -242,69 +242,54 @@ MIT
 ## Time Zone Handling
 
 ### Overview
-The application handles time slots in UTC (Coordinated Universal Time) to ensure consistency across different time zones.
+The application handles time slots in UTC (Coordinated Universal Time) to ensure consistency across different time zones, including proper handling of Daylight Saving Time (DST) transitions.
 
 ### Time Input Formats
 
-1. **Non-Recurring Time Slots**
+1. **Time Slots**
    ```json
    {
-     "start_time": "2025-09-11T16:00:00Z",  // ISO 8601 with UTC indicator (Z)
-     "end_time": "2025-09-11T17:00:00Z"
+     "consultant_id": "uuid",
+     "start_time": "2025-03-15T14:00:00Z",
+     "end_time": "2025-03-15T15:00:00Z"
    }
    ```
-   - Must include 'Z' suffix to indicate UTC
-   - Times are stored directly as UTC in database
-   - No timezone conversion is performed
+   - Times must be in ISO 8601 format with UTC indicator (Z)
+   - Times are stored in UTC in database
+   - DST transitions are handled automatically
 
 2. **Recurring Time Slots**
    ```json
    {
-     "start_time": "16:00",  // 24-hour format (HH:mm)
-     "end_time": "17:00",
+     "consultant_id": "uuid",
+     "start_time": "2025-03-15T14:00:00Z",
+     "end_time": "2025-03-15T15:00:00Z",
      "recurring": {
-       "frequency": "weekly",
-       "day_of_week": 3,     // 0 = Sunday, 6 = Saturday
-       "until": "2025-10-19T00:00:00Z"
+       "frequency": "weekly|monthly",
+       "until": "2025-04-15T00:00:00Z"
      }
    }
    ```
-   - Simple time format (HH:mm) is interpreted as UTC
-   - No timezone conversion is performed
-   - 'until' date must be in ISO 8601 UTC format
 
 ### Important Notes
 
-1. **All times are stored and returned in UTC**
+1. **All times are in UTC**
    - Database stores times in UTC
-   - API responses include UTC times with 'Z' suffix
-   - No automatic timezone conversion
+   - API accepts and returns UTC times
+   - DST transitions are handled internally
 
 2. **Client Responsibility**
-   - Clients must convert local times to UTC before sending
-   - Clients must convert UTC to local time when displaying
+   - Convert local times to UTC before sending
+   - Convert UTC to local time when displaying
 
-3. **Examples**
-   ```javascript
-   // Client-side conversion to UTC
-   const localTime = new Date('2025-09-11T12:00:00');
-   const utcTime = localTime.toISOString(); // "2025-09-11T16:00:00Z"
+3. **DST Handling**
+   - System maintains consistent durations across DST changes
+   - Warnings are provided for slots spanning DST transitions
+   - Recurring slots maintain their local time across DST boundaries
 
-   // Client-side conversion from UTC
-   const utcResponse = "2025-09-11T16:00:00Z";
-   const localTime = new Date(utcResponse).toLocaleString();
-   ```
-
-4. **Daylight Saving Time (DST)**
-   - UTC times remain consistent during DST changes
-   - Clients must handle DST conversions locally
-
-### Best Practices
-
-1. Always send times in UTC format with 'Z' suffix
-2. For recurring slots, use 24-hour format without timezone
-3. Handle all timezone conversions on the client side
-4. Test across DST transitions
-5. Validate timezone handling in your client application
+4. **Best Practices**
+   - Always use ISO 8601 format with 'Z' suffix
+   - Test bookings across DST transitions
+   - Handle timezone conversions client-side
 
 

@@ -11,12 +11,12 @@ const timeSlotCreate = [
 
   // Time validation
   body('start_time')
-    .custom(validateDateTime)
-    .withMessage('Invalid date/time format'),
+    .isISO8601()
+    .withMessage('Invalid start time format'),
   
   body('end_time')
-    .custom(validateDateTime)
-    .withMessage('Invalid date/time format'),
+    .isISO8601()
+    .withMessage('Invalid end time format'),
 
   // Recurring pattern validation
   body('recurring')
@@ -25,24 +25,14 @@ const timeSlotCreate = [
     .withMessage('Recurring must be an object'),
   
   body('recurring.frequency')
-    .if(body('recurring').exists())
+    .optional()
     .isIn(['weekly', 'monthly'])
     .withMessage('Frequency must be weekly or monthly'),
   
-  body('recurring.day_of_week')
-    .if(body('recurring.frequency').equals('weekly'))
-    .isInt({ min: 0, max: 6 })
-    .withMessage('Day of week must be between 0 and 6'),
-  
-  body('recurring.day_of_month')
-    .if(body('recurring.frequency').equals('monthly'))
-    .isInt({ min: 1, max: 31 })
-    .withMessage('Day of month must be between 1 and 31'),
-  
   body('recurring.until')
-    .if(body('recurring').exists())
+    .optional()
     .isISO8601()
-    .withMessage('Until date must be in ISO format')
+    .withMessage('Invalid until date format'),
 ];
 
 // Query parameters validation
