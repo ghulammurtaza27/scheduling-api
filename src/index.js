@@ -4,10 +4,12 @@ const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
+const sanitizeInput = require('./middleware/sanitization');
 const timeSlotsRouter = require('./routes/timeSlots');
 
 app.use(cors());
 app.use(express.json());
+app.use(sanitizeInput);
 
 app.use('/api/time-slots', timeSlotsRouter);
 

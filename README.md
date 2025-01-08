@@ -160,25 +160,56 @@ The API returns appropriate HTTP status codes:
 
 ## Database Schema
 
-### time_slots
-- id (UUID)
-- consultant_id (UUID)
-- customer_id (UUID, nullable)
-- start_time (TIMESTAMP)
-- end_time (TIMESTAMP)
-- is_booked (BOOLEAN)
-- recurring_pattern_id (UUID, nullable)
-- created_at (TIMESTAMP)
-- updated_at (TIMESTAMP)
+### consultants
+- `id` (UUID, PRIMARY KEY, default: uuid_generate_v4())
+- `name` (VARCHAR(255), NOT NULL)
+- `email` (VARCHAR(255), UNIQUE, NOT NULL)
+- `created_at` (TIMESTAMP, default: CURRENT_TIMESTAMP)
+
+### customers
+- `id` (UUID, PRIMARY KEY, default: uuid_generate_v4())
+- `name` (VARCHAR(255), NOT NULL)
+- `email` (VARCHAR(255), UNIQUE, NOT NULL)
+- `created_at` (TIMESTAMP, default: CURRENT_TIMESTAMP)
 
 ### recurring_patterns
-- id (UUID)
-- frequency (VARCHAR)
-- day_of_week (INTEGER)
-- day_of_month (INTEGER)
-- until_date (TIMESTAMP)
-- created_at (TIMESTAMP)
-- updated_at (TIMESTAMP)
+- `id` (UUID, PRIMARY KEY, default: uuid_generate_v4())
+- `frequency` (VARCHAR(10), NOT NULL) - 'weekly' or 'monthly'
+- `day_of_week` (INTEGER, nullable) - 0-6 for weekly patterns
+- `day_of_month` (INTEGER, nullable) - 1-31 for monthly patterns
+- `until_date` (TIMESTAMP, NOT NULL)
+- `created_at` (TIMESTAMP, default: CURRENT_TIMESTAMP)
+- `updated_at` (TIMESTAMP, default: CURRENT_TIMESTAMP)
+
+### time_slots
+- `id` (UUID, PRIMARY KEY, default: uuid_generate_v4())
+- `consultant_id` (UUID, NOT NULL, FOREIGN KEY)
+- `customer_id` (UUID, nullable, FOREIGN KEY)
+- `start_time` (TIMESTAMP, NOT NULL)
+- `end_time` (TIMESTAMP, NOT NULL)
+- `is_booked` (BOOLEAN, default: false)
+- `is_cancelled` (BOOLEAN, default: false)
+- `cancelled_at` (TIMESTAMP, nullable)
+- `recurring_pattern_id` (UUID, nullable, FOREIGN KEY)
+- `created_at` (TIMESTAMP, default: CURRENT_TIMESTAMP)
+- `updated_at` (TIMESTAMP, default: CURRENT_TIMESTAMP)
+
+### Constraints
+- `check_frequency`: frequency IN ('weekly', 'monthly')
+- `check_day_of_week`: day_of_week >= 0 AND day_of_week <= 6
+- `check_day_of_month`: day_of_month >= 1 AND day_of_month <= 31
+- `check_times`: end_time > start_time
+
+### Relationships
+- `time_slots.consultant_id` → `consultants.id`
+- `time_slots.customer_id` → `customers.id`
+- `time_slots.recurring_pattern_id` → `recurring_patterns.id`
+
+### Indexes
+- `idx_time_slots_consultant` on `time_slots(consultant_id)`
+- `idx_time_slots_customer` on `time_slots(customer_id)`
+- `idx_time_slots_start_time` on `time_slots(start_time)`
+- `idx_time_slots_recurring` on `time_slots(recurring_pattern_id)`
 
 ## Future Improvements
 

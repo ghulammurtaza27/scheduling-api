@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const timeSlotController = require('../controllers/timeSlotController');
+const sanitizeInput = require('../middleware/sanitization');
 const { timeSlotCreate, validateRequest } = require('../middleware/validation');
 
 // Create time slot
 router.post('/',
+  sanitizeInput,
   timeSlotCreate,
   validateRequest,
   timeSlotController.createTimeSlot.bind(timeSlotController)
@@ -17,6 +19,8 @@ router.get('/',
 
 // Reserve time slot
 router.post('/:slotId/reserve',
+  sanitizeInput,
+  validateRequest,
   timeSlotController.reserveTimeSlot.bind(timeSlotController)
 );
 
