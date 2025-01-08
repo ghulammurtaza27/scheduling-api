@@ -4,8 +4,18 @@ const { PAGINATION } = require('../config/constants');
 const { withTransaction } = require('../utils/dbTransaction');
 const moment = require('moment-timezone');
 
+/**
+ * Service class handling all time slot related operations
+ * Manages creation, retrieval, updates, and deletion of consultation time slots
+ */
 class TimeSlotService {
   // CRUD Operations
+  /**
+   * Retrieves a single time slot by ID
+   * @param {string} slotId - UUID of the time slot
+   * @throws {AppError} If slot ID format is invalid
+   * @returns {Promise<Object>} Time slot data
+   */
   async getSlotById(slotId) {
     try {
       const { rows: [slot] } = await pool.query(
@@ -19,6 +29,15 @@ class TimeSlotService {
     }
   }
 
+  /**
+   * Creates a new time slot or recurring time slots
+   * @param {string} consultant_id - UUID of the consultant
+   * @param {string} start_time - Start time of the slot
+   * @param {string} end_time - End time of the slot
+   * @param {Object} [recurring=null] - Recurring pattern (null for single slot)
+   * @param {string} [timezone='UTC'] - Timezone for the slot
+   * @returns {Promise<Object>} Created slot(s) data with warnings
+   */
   async createTimeSlot(consultant_id, start_time, end_time, recurring = null, timezone = 'UTC') {
     return withTransaction(async (client) => {
       const { startUTC, endUTC, warnings } = this.#convertTimeToUTC(start_time, end_time, timezone);
@@ -44,6 +63,12 @@ class TimeSlotService {
     });
   }
 
+  /**
+   * Deletes a time slot if it's not booked
+   * @param {string} slotId - UUID of the slot to delete
+   * @throws {AppError} If slot is booked or not found
+   * @returns {Promise<Object>} Deletion confirmation
+   */
   async deleteTimeSlot(slotId) {
     return withTransaction(async (client) => {
       const slot = await this.getSlotById(slotId);
@@ -60,6 +85,13 @@ class TimeSlotService {
   }
 
   // Reservation Operations
+  /**
+   * Reserves a time slot for a customer
+   * @param {string} slotId - UUID of the slot
+   * @param {string} customerId - UUID of the customer
+   * @throws {AppError} If slot is unavailable or not found
+   * @returns {Promise<Object>} Updated slot data
+   */
   async reserveTimeSlot(slotId, customerId) {
     return withTransaction(async (client) => {
       const { rows: [slot] } = await client.query(
@@ -84,6 +116,17 @@ class TimeSlotService {
   }
 
   // Query Operations
+  /**
+   * Retrieves time slots with filtering and pagination
+   * @param {Object} query - Query parameters
+   * @param {string} [query.consultant_id] - Filter by consultant
+   * @param {string} [query.start_date] - Filter by start date
+   * @param {string} [query.end_date] - Filter by end date
+   * @param {string} [query.month] - Filter by month (YYYY-MM)
+   * @param {number} [query.page=1] - Page number
+   * @param {number} [query.limit] - Results per page
+   * @returns {Promise<Object>} Paginated time slots
+   */
   async getTimeSlots(query) {
     const { consultant_id, start_date, end_date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT } = query;
     const limitNum = Math.min(parseInt(limit), PAGINATION.MAX_LIMIT);
@@ -159,6 +202,10 @@ class TimeSlotService {
   }
 
   // Private Helper Methods
+  /**
+   * Converts local time to UTC and checks for DST transitions
+   * @private
+   */
   #convertTimeToUTC(start_time, end_time, timezone = 'UTC') {
     const start = moment.tz(start_time, timezone);
     const end = moment.tz(end_time, timezone);
@@ -171,6 +218,10 @@ class TimeSlotService {
     return { startUTC: start.utc().toDate(), endUTC: end.utc().toDate(), warnings };
   }
 
+  /**
+   * Creates a single time slot in the database
+   * @private
+   */
   async #createSingleSlot(client, consultant_id, start, end) {
     const { rows: [slot] } = await client.query(
       `INSERT INTO time_slots (consultant_id, start_time, end_time)
@@ -181,6 +232,11 @@ class TimeSlotService {
     return slot;
   }
 
+  /**
+   * Checks for overlapping time slots
+   * @private
+   * @throws {AppError} If overlap is found
+   */
   async #checkOverlap(client, consultant_id, startTime, endTime) {
     const { rows } = await client.query(
       `SELECT id FROM time_slots 
@@ -193,6 +249,10 @@ class TimeSlotService {
     if (rows.length > 0) throw new AppError('Time slot overlaps with existing slot', 400);
   }
 
+  /**
+   * Generates recurring time slots based on pattern
+   * @private
+   */
   #generateRecurringSlots(startDate, endDate, recurring, timezone) {
     const slots = [];
     const duration = moment(endDate).diff(moment(startDate));
