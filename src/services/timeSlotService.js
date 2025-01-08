@@ -3,7 +3,19 @@ const AppError = require('../utils/AppError');
 const { PAGINATION, TIME_SLOTS } = require('../config/constants');
 const { withTransaction } = require('../utils/dbTransaction');
 
+/**
+ * Service class for managing time slots
+ * Handles creation, retrieval, reservation, and deletion of time slots
+ */
 class TimeSlotService {
+  /**
+   * Validates if a given date is valid
+   * @param {number} year - Full year (e.g., 2024)
+   * @param {number} month - Month (0-11)
+   * @param {number} day - Day of month (1-31)
+   * @returns {boolean} True if date is valid
+   * @private
+   */
   #isValidDate(year, month, day) {
     const date = new Date(Date.UTC(year, month, day));
     return date.getUTCFullYear() === year &&
@@ -11,6 +23,15 @@ class TimeSlotService {
            date.getUTCDate() === day;
   }
 
+  /**
+   * Creates a UTC date from hours and minutes
+   * @param {number} hours - Hours (0-23)
+   * @param {number} minutes - Minutes (0-59)
+   * @param {Date} baseDate - Base date to use
+   * @returns {Date} UTC date object
+   * @throws {AppError} If date is invalid
+   * @private
+   */
   #createUTCDate(hours, minutes, baseDate) {
     const year = baseDate.getUTCFullYear();
     const month = baseDate.getUTCMonth();
@@ -23,6 +44,17 @@ class TimeSlotService {
     return new Date(Date.UTC(year, month, day, hours, minutes, 0, 0));
   }
 
+  /**
+   * Handles recurring date patterns
+   * @param {Date} now - Current date
+   * @param {Object} recurring - Recurring pattern object
+   * @param {string} recurring.frequency - 'weekly' or 'monthly'
+   * @param {number} [recurring.day_of_week] - Day of week (0-6)
+   * @param {number} [recurring.day_of_month] - Day of month (1-31)
+   * @returns {Date} Next occurrence date
+   * @throws {AppError} If pattern is invalid
+   * @private
+   */
   #handleRecurringDate(now, recurring) {
     if (recurring.frequency === 'weekly' && 'day_of_week' in recurring) {
       const daysToAdd = (recurring.day_of_week - now.getUTCDay() + 7) % 7;
@@ -32,7 +64,6 @@ class TimeSlotService {
     }
     
     if (recurring.frequency === 'monthly' && 'day_of_month' in recurring) {
-      // Validate day_of_month is real for the target month
       const year = now.getUTCFullYear();
       const month = now.getUTCMonth();
       const day = recurring.day_of_month;
@@ -44,7 +75,6 @@ class TimeSlotService {
       const date = new Date(Date.UTC(year, month, day));
       
       if (date < now) {
-        // Check next month's date is valid too
         if (!this.#isValidDate(year, month + 1, day)) {
           throw new AppError(`Invalid day for next month: ${day}`, 400);
         }
@@ -56,11 +86,19 @@ class TimeSlotService {
     throw new AppError('Invalid recurring pattern', 400);
   }
 
+  /**
+   * Validates time range for a slot
+   * @param {string} start_time - Start time (ISO or HH:mm format)
+   * @param {string} end_time - End time (ISO or HH:mm format)
+   * @param {Object} [recurring] - Recurring pattern
+   * @returns {Object} Validated start and end dates
+   * @throws {AppError} If validation fails
+   * @private
+   */
   #validateTimeRange(start_time, end_time, recurring = null) {
     const now = new Date();
     let start, end;
 
-    // Handle HH:MM format
     if (start_time.includes(':') && !start_time.includes('T')) {
       const [startHours, startMinutes] = start_time.split(':').map(Number);
       const [endHours, endMinutes] = end_time.split(':').map(Number);
@@ -81,46 +119,39 @@ class TimeSlotService {
       }
 
       if (start < now) {
-        const shift = recurring?.frequency === 'weekly' ? 7 : 1;
-        const method = recurring?.frequency === 'weekly' ? 'setUTCDate' : 'setUTCMonth';
-        const amount = recurring?.frequency === 'weekly' ? 
+        if (!recurring) {
+          throw new AppError('Cannot create slots in the past', 400);
+        }
+        const shift = recurring.frequency === 'weekly' ? 7 : 1;
+        const method = recurring.frequency === 'weekly' ? 'setUTCDate' : 'setUTCMonth';
+        const amount = recurring.frequency === 'weekly' ? 
           start.getUTCDate() + shift : 
           start.getUTCMonth() + shift;
 
-        if (recurring) {
-          start[method](amount);
-          end[method](amount);
-        } else {
-          throw new AppError('Cannot create slots in the past', 400);
-        }
+        start[method](amount);
+        end[method](amount);
       }
     } else {
-      // Handle ISO format with validation
-      const startDate = new Date(start_time);
-      const endDate = new Date(end_time);
+      start = new Date(start_time);
+      end = new Date(end_time);
 
-      // Validate the dates are real
       if (!this.#isValidDate(
-        startDate.getUTCFullYear(),
-        startDate.getUTCMonth(),
-        startDate.getUTCDate()
+        start.getUTCFullYear(),
+        start.getUTCMonth(),
+        start.getUTCDate()
       )) {
         throw new AppError('Invalid start date', 400);
       }
 
       if (!this.#isValidDate(
-        endDate.getUTCFullYear(),
-        endDate.getUTCMonth(),
-        endDate.getUTCDate()
+        end.getUTCFullYear(),
+        end.getUTCMonth(),
+        end.getUTCDate()
       )) {
         throw new AppError('Invalid end date', 400);
       }
-
-      start = startDate;
-      end = endDate;
     }
 
-    // Validate time constraints
     if (start >= end) {
       throw new AppError('End time must be after start time', 400);
     }
@@ -141,12 +172,59 @@ class TimeSlotService {
     return { start, end };
   }
 
-  async createTimeSlot(consultant_id, start_time, end_time, recurring = null) {
-    const client = await pool.connect();
-    
+  /**
+   * Retrieves a time slot by ID
+   * @param {string} slotId - UUID of the slot
+   * @returns {Promise<Object>} Time slot object
+   * @throws {AppError} If ID format is invalid
+   */
+  async getSlotById(slotId) {
     try {
-      await client.query('BEGIN');
-      
+      const { rows: [slot] } = await pool.query(
+        'SELECT * FROM time_slots WHERE id = $1',
+        [slotId]
+      );
+      return slot;
+    } catch (err) {
+      if (err.code === '22P02') {
+        throw new AppError('Invalid slot ID format', 400);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Checks if a customer exists
+   * @param {string} customerId - UUID of the customer
+   * @returns {Promise<boolean>} True if customer exists
+   * @throws {AppError} If ID format is invalid
+   */
+  async checkCustomerExists(customerId) {
+    try {
+      const { rows: [customer] } = await pool.query(
+        'SELECT id FROM customers WHERE id = $1',
+        [customerId]
+      );
+      return !!customer;
+    } catch (err) {
+      if (err.code === '22P02') {
+        throw new AppError('Invalid customer ID format', 400);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Creates a new time slot
+   * @param {string} consultant_id - UUID of the consultant
+   * @param {string} start_time - Start time
+   * @param {string} end_time - End time
+   * @param {Object} [recurring] - Recurring pattern
+   * @returns {Promise<Object>} Created time slot
+   * @throws {AppError} If validation fails or slot overlaps
+   */
+  async createTimeSlot(consultant_id, start_time, end_time, recurring = null) {
+    return withTransaction(async (client) => {
       const { start, end } = this.#validateTimeRange(start_time, end_time, recurring);
       const startIso = start.toISOString();
       const endIso = end.toISOString();
@@ -166,11 +244,9 @@ class TimeSlotService {
           [consultant_id, startIso, endIso, pattern.id]
         );
 
-        await client.query('COMMIT');
-        return { status: 'success', statusCode: 201, data: slot };
+        return { data: slot };
       }
 
-      // Check for overlapping slots
       const { rows: overlaps } = await client.query(
         `SELECT id FROM time_slots 
          WHERE consultant_id = $1 
@@ -191,22 +267,31 @@ class TimeSlotService {
         [consultant_id, startIso, endIso]
       );
 
-      await client.query('COMMIT');
-      return { status: 'success', statusCode: 201, data: slot };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+      return { data: slot };
+    });
   }
 
-  async getTimeSlots({ consultant_id, date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT, include_booked = false }) {
+  /**
+   * Retrieves time slots based on query parameters
+   * @param {Object} query - Query parameters
+   * @param {string} [query.consultant_id] - Filter by consultant
+   * @param {string} [query.date] - Filter by date
+   * @param {string} [query.month] - Filter by month (YYYY-MM)
+   * @param {number} [query.page=1] - Page number
+   * @param {number} [query.limit] - Items per page
+   * @param {boolean} [query.include_booked=false] - Include booked slots
+   * @returns {Promise<Object>} Paginated time slots
+   */
+  async getTimeSlots(query) {
+    const { consultant_id, date, month, page = 1, include_booked = false } = query;
+    
+    // Enforce maximum page size
+    let limit = parseInt(query.limit) || PAGINATION.DEFAULT_LIMIT;
+    limit = Math.min(limit, PAGINATION.MAX_LIMIT);
+    
     try {
-      // Ensure limit doesn't exceed maximum
-      limit = Math.min(parseInt(limit) || PAGINATION.DEFAULT_LIMIT, PAGINATION.MAX_LIMIT);
-      const offset = ((parseInt(page) || 1) - 1) * limit;
-
+      const queryParams = [];
+      let paramCount = 1;
       let baseQuery = `
         SELECT ts.*, 
                COALESCE(c.name, 'Unknown') as consultant_name,
@@ -219,13 +304,9 @@ class TimeSlotService {
         WHERE ts.start_time >= NOW()
       `;
 
-      // Only show available slots by default
       if (!include_booked) {
         baseQuery += ` AND ts.is_booked = false`;
       }
-
-      const queryParams = [];
-      let paramCount = 1;
 
       if (consultant_id) {
         baseQuery += ` AND ts.consultant_id = $${paramCount}`;
@@ -247,7 +328,6 @@ class TimeSlotService {
         paramCount += 2;
       }
 
-      // Get total count
       const countResult = await pool.query(
         `SELECT COUNT(*) FROM (${baseQuery}) AS count_query`,
         queryParams
@@ -255,8 +335,8 @@ class TimeSlotService {
 
       const totalItems = parseInt(countResult.rows[0].count);
       const totalPages = Math.ceil(totalItems / limit);
+      const offset = ((parseInt(page) || 1) - 1) * limit;
 
-      // Get paginated results
       const finalQuery = `${baseQuery} 
         ORDER BY ts.start_time 
         LIMIT ${limit} OFFSET ${offset}`;
@@ -264,8 +344,6 @@ class TimeSlotService {
       const result = await pool.query(finalQuery, queryParams);
 
       return {
-        status: 'success',
-        statusCode: 200,
         data: {
           time_slots: result.rows,
           pagination: {
@@ -281,9 +359,15 @@ class TimeSlotService {
     }
   }
 
+  /**
+   * Reserves a time slot
+   * @param {string} slotId - UUID of the slot
+   * @param {string} customerId - UUID of the customer
+   * @returns {Promise<Object>} Reserved time slot
+   * @throws {AppError} If slot is unavailable or not found
+   */
   async reserveTimeSlot(slotId, customerId) {
     return withTransaction(async (client) => {
-      // Get slot with lock
       const { rows: [slot] } = await client.query(
         'SELECT * FROM time_slots WHERE id = $1 FOR UPDATE',
         [slotId]
@@ -313,6 +397,12 @@ class TimeSlotService {
     });
   }
 
+  /**
+   * Deletes a time slot
+   * @param {string} slotId - UUID of the slot
+   * @returns {Promise<Object>} Success message
+   * @throws {AppError} If slot is booked or not found
+   */
   async deleteTimeSlot(slotId) {
     return withTransaction(async (client) => {
       const { rows: [slot] } = await client.query(
@@ -335,36 +425,6 @@ class TimeSlotService {
 
       return { message: 'Time slot deleted successfully' };
     });
-  }
-
-  async getSlotById(slotId) {
-    try {
-      const { rows: [slot] } = await pool.query(
-        'SELECT * FROM time_slots WHERE id = $1',
-        [slotId]
-      );
-      return slot;
-    } catch (err) {
-      if (err.code === '22P02') { // Invalid UUID format
-        throw new AppError('Invalid slot ID format', 400);
-      }
-      throw err;
-    }
-  }
-
-  async checkCustomerExists(customerId) {
-    try {
-      const { rows: [customer] } = await pool.query(
-        'SELECT id FROM customers WHERE id = $1',
-        [customerId]
-      );
-      return !!customer;
-    } catch (err) {
-      if (err.code === '22P02') { // Invalid UUID format
-        throw new AppError('Invalid customer ID format', 400);
-      }
-      throw err;
-    }
   }
 }
 

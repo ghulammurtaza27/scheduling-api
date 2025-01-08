@@ -647,4 +647,39 @@ describe('Time Slots API', () => {
       expect(response.status).toBe(400);
     });
   });
+
+  describe('Date Validation', () => {
+    it('should reject time slots in the past', async () => {
+      const pastDate = new Date();
+      pastDate.setDate(pastDate.getDate() - 1); // Yesterday
+      
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id,
+          start_time: pastDate.toISOString(),
+          end_time: new Date(pastDate.getTime() + 60 * 60 * 1000).toISOString() // +1 hour
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+      expect(response.body.error).toContain('Cannot create slots in the past');
+    });
+
+    it('should accept time slots in the future', async () => {
+      const futureDate = new Date();
+      futureDate.setDate(futureDate.getDate() + 1); // Tomorrow
+      
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id,
+          start_time: futureDate.toISOString(),
+          end_time: new Date(futureDate.getTime() + 60 * 60 * 1000).toISOString() // +1 hour
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.success).toBe(true);
+    });
+  });
 });
