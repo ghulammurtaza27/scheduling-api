@@ -25,7 +25,7 @@ router.post('/:slotId/reserve',
 );
 
 // Delete time slot
-router.delete('/:slotId',
+router.delete('/:slotId/delete',
   timeSlotController.deleteTimeSlot.bind(timeSlotController)
 );
 
