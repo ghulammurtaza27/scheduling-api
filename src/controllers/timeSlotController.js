@@ -7,14 +7,15 @@ class TimeSlotController {
   async createTimeSlot(req, res) {
     try {
       // Extract time slot details from request
-      const { consultant_id, start_time, end_time, recurring } = req.body;
+      const { consultant_id, start_time, end_time, recurring, timezone } = req.body;
 
       // Create the time slot(s) via service
       const result = await timeSlotService.createTimeSlot(
         consultant_id,
         start_time,
         end_time,
-        recurring
+        recurring,
+        timezone
       );
 
       // Return success with appropriate message

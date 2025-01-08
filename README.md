@@ -53,8 +53,9 @@ POST /api/time-slots
 ```json
 {
   "consultant_id": "uuid",
-  "start_time": "2025-03-15T14:00:00Z",
-  "end_time": "2025-03-15T15:00:00Z"
+  "start_time": "2025-03-15T14:00:00+00:00",
+  "end_time": "2025-03-15T15:00:00+00:00",
+  "timezone": "America/New_York"
 }
 ```
 
@@ -65,11 +66,12 @@ POST /api/time-slots
 ```json
 {
   "consultant_id": "uuid",
-  "start_time": "2025-03-15T14:00:00Z",
-  "end_time": "2025-03-15T15:00:00Z",
+  "start_time": "2025-03-15T14:00:00+00:00",
+  "end_time": "2025-03-15T15:00:00+00:00",
+  "timezone": "America/New_York",
   "recurring": {
     "frequency": "weekly|monthly",
-    "until": "2025-04-15T00:00:00Z"
+    "until": "2025-04-15T00:00:00+00:00"
   }
 }
 ```
@@ -85,6 +87,8 @@ Query Parameters:
 - `month` (YYYY-MM)
 - `page` (default: 1)
 - `limit` (default: 20, max: 100)
+
+Results are sorted by start_time in ascending order.
 
 #### ✅ Reserve Slot
 ```http
@@ -102,45 +106,36 @@ DELETE /api/time-slots/:slotId
 ```
 > Note: Cannot delete booked slots
 
-## 💡 Response Examples
-
-### ✅ Success
-```json
-{
-  "success": true,
-  "data": {
-    "time_slots": [...],
-    "pagination": {
-      "current_page": 1,
-      "total_pages": 5,
-      "total_items": 100,
-      "limit": 20
-    }
-  }
-}
-```
-
-### ❌ Error
-```json
-{
-  "success": false,
-  "error": "Error message",
-  "details": "Detailed error description"
-}
-```
-
 ## 🌐 Time Zone Handling
 
 ### Key Points
-- All times are in UTC (ISO 8601 format with Z suffix)
+- Accepts ISO8601 formatted times with timezone offsets
+- Optional timezone parameter for explicit timezone handling
 - Times stored in UTC in database
 - DST transitions handled automatically
 - System maintains consistent durations across DST changes
 
-### Client Responsibilities
-- Convert local times to UTC before sending
-- Convert UTC to local time when displaying
-- Handle timezone conversions client-side
+### Examples
+```json
+// New York time (EDT)
+{
+  "start_time": "2025-03-15T10:00:00-04:00",
+  "end_time": "2025-03-15T11:00:00-04:00"
+}
+
+// Tokyo time (JST)
+{
+  "start_time": "2025-03-15T10:00:00+09:00",
+  "end_time": "2025-03-15T11:00:00+09:00"
+}
+
+// With explicit timezone
+{
+  "start_time": "2025-03-15T10:00:00",
+  "end_time": "2025-03-15T11:00:00",
+  "timezone": "Asia/Tokyo"
+}
+```
 
 ## 🗄️ Database Schema
 

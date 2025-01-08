@@ -51,9 +51,9 @@ const timeSlotCreate = [
   // Validate timezone
   body('timezone')
     .optional()
-    .custom(timezone => {
-      if (!moment.tz.zone(timezone)) {
-        throw new Error('Invalid timezone');
+    .custom((value) => {
+      if (!moment.tz.zone(value)) {
+        throw new Error('Invalid timezone. Must be a valid IANA timezone identifier');
       }
       return true;
     }),

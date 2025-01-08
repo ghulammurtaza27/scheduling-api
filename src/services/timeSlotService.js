@@ -30,21 +30,22 @@ class TimeSlotService {
   }
 
   /**
-   * Creates a new time slot or recurring time slots
+   * Creates a new time slot
    * @param {string} consultant_id - UUID of the consultant
-   * @param {string} start_time - Start time of the slot
-   * @param {string} end_time - End time of the slot
-   * @param {Object} [recurring=null] - Recurring pattern (null for single slot)
-   * @param {string} [timezone='UTC'] - Timezone for the slot
-   * @returns {Promise<Object>} Created slot(s) data with warnings
+   * @param {string} start_time - ISO8601 formatted start time
+   * @param {string} end_time - ISO8601 formatted end time
+   * @param {Object} [recurring=null] - Recurring pattern
+   * @param {string} [timezone] - Optional timezone (defaults to UTC)
    */
   async createTimeSlot(consultant_id, start_time, end_time, recurring = null, timezone = 'UTC') {
     return withTransaction(async (client) => {
       const { startUTC, endUTC, warnings } = this.#convertTimeToUTC(start_time, end_time, timezone);
+      
 
       if (!recurring) {
         await this.#checkOverlap(client, consultant_id, startUTC, endUTC);
         const slot = await this.#createSingleSlot(client, consultant_id, startUTC, endUTC);
+   
         return { data: slot, warnings };
       }
 
@@ -125,55 +126,62 @@ class TimeSlotService {
    * @param {string} [query.month] - Filter by month (YYYY-MM)
    * @param {number} [query.page=1] - Page number
    * @param {number} [query.limit] - Results per page
-   * @returns {Promise<Object>} Paginated time slots
+   * @returns {Promise<Object>} Paginated time slots, sorted by start_time ascending
    */
   async getTimeSlots(query) {
     const { consultant_id, start_date, end_date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT } = query;
     const limitNum = Math.min(parseInt(limit), PAGINATION.MAX_LIMIT);
     const offset = (Math.max(1, parseInt(page)) - 1) * limitNum;
     
-    const queryParams = [];
+    // Build WHERE clause
+    const conditions = [];
+    const params = [];
     let paramCount = 1;
-    let baseQuery = `
+
+    if (consultant_id) {
+      conditions.push(`ts.consultant_id = $${paramCount++}`);
+      params.push(consultant_id);
+    }
+
+    if (start_date) {
+      conditions.push(`DATE(ts.start_time) >= $${paramCount++}`);
+      params.push(start_date);
+    }
+
+    if (end_date) {
+      conditions.push(`DATE(ts.start_time) <= $${paramCount++}`);
+      params.push(end_date);
+    }
+
+    if (month) {
+      conditions.push(`TO_CHAR(ts.start_time, 'YYYY-MM') = $${paramCount++}`);
+      params.push(month);
+    }
+
+    // Get paginated results first
+    const finalQuery = `
       SELECT ts.*, 
              c.name as consultant_name,
              cu.name as customer_name
       FROM time_slots ts
       LEFT JOIN consultants c ON ts.consultant_id = c.id
       LEFT JOIN customers cu ON ts.customer_id = cu.id
-      WHERE 1=1
+      WHERE ${conditions.length ? conditions.join(' AND ') : '1=1'}
+      ORDER BY ts.start_time
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
     `;
 
-    if (consultant_id) {
-      baseQuery += ` AND ts.consultant_id = $${paramCount++}`;
-      queryParams.push(consultant_id);
-    }
+    const result = await pool.query(finalQuery, [...params, limitNum, offset]);
 
-    if (start_date) {
-      baseQuery += ` AND DATE(ts.start_time) >= $${paramCount++}`;
-      queryParams.push(start_date);
-    }
+    // Get total count using a lighter query
+    const countQuery = `
+      SELECT COUNT(*) 
+      FROM time_slots ts
+      WHERE ${conditions.length ? conditions.join(' AND ') : '1=1'}
+    `;
 
-    if (end_date) {
-      baseQuery += ` AND DATE(ts.start_time) <= $${paramCount++}`;
-      queryParams.push(end_date);
-    }
-
-    if (month) {
-      baseQuery += ` AND TO_CHAR(ts.start_time, 'YYYY-MM') = $${paramCount++}`;
-      queryParams.push(month);
-    }
-
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM (${baseQuery}) AS count_query`,
-      queryParams
-    );
-
-    const result = await pool.query(
-      `${baseQuery} ORDER BY ts.start_time LIMIT ${limitNum} OFFSET ${offset}`,
-      queryParams
-    );
-
+    const countResult = await pool.query(countQuery, params);
+ 
     return {
       data: {
         time_slots: result.rows,
@@ -203,19 +211,28 @@ class TimeSlotService {
 
   // Private Helper Methods
   /**
-   * Converts local time to UTC and checks for DST transitions
+   * Converts local time to UTC considering timezone
    * @private
    */
   #convertTimeToUTC(start_time, end_time, timezone = 'UTC') {
+  
+
+    // Create moments in the specified timezone
     const start = moment.tz(start_time, timezone);
     const end = moment.tz(end_time, timezone);
-    const warnings = [];
 
+  
+
+    const warnings = [];
     if (start.isDST() !== end.isDST()) {
       warnings.push('Time slot spans DST transition');
     }
 
-    return { startUTC: start.utc().toDate(), endUTC: end.utc().toDate(), warnings };
+    return {
+      startUTC: start.utc().toDate(),
+      endUTC: end.utc().toDate(),
+      warnings
+    };
   }
 
   /**
