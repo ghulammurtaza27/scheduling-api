@@ -722,4 +722,68 @@ describe('Time Slots API', () => {
       });
     });
   });
+
+  describe('Input Sanitization', () => {
+    test('should handle SQL injection attempts', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: "'; DROP TABLE time_slots; --",
+          start_time: "2025-03-22T14:00:00Z",
+          end_time: "2025-03-22T15:00:00Z"
+        });
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+
+    test('should sanitize special characters in input', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id,
+          start_time: "2025-03-22T14:00:00Z<script>alert(1)</script>",
+          end_time: "2025-03-22T15:00:00Z",
+          notes: "<script>alert('xss')</script>"
+        });
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+
+    test('should reject malformed UUIDs', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: "not-a-uuid",
+          start_time: "2025-03-22T14:00:00Z",
+          end_time: "2025-03-22T15:00:00Z"
+        });
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+
+    test('should handle null byte injection', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id + '\0',
+          start_time: "2025-03-22T14:00:00Z",
+          end_time: "2025-03-22T15:00:00Z"
+        });
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+
+    test('should reject oversized input', async () => {
+      const response = await request(app)
+        .post('/api/time-slots')
+        .send({
+          consultant_id: mockConsultant.id,
+          start_time: "2025-03-22T14:00:00Z",
+          end_time: "2025-03-22T15:00:00Z",
+          notes: "a".repeat(10000) // Attempt to send very large string
+        });
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+    });
+  });
 });

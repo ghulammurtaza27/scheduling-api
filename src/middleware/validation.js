@@ -33,6 +33,12 @@ const timeSlotCreate = [
     .optional()
     .isISO8601()
     .withMessage('Invalid until date format'),
+
+  body('notes')
+    .optional()
+    .isString()
+    .isLength({ max: 1000 })
+    .withMessage('Notes must not exceed 1000 characters'),
 ];
 
 // Query parameters validation
