@@ -1,6 +1,6 @@
 const pool = require('../config/database');
 const AppError = require('../utils/AppError');
-const { PAGINATION, TIME_SLOTS } = require('../config/constants');
+const { PAGINATION } = require('../config/constants');
 const { withTransaction } = require('../utils/dbTransaction');
 const moment = require('moment-timezone');
 
