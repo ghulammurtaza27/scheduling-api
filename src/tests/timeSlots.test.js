@@ -684,7 +684,7 @@ describe('Time Slots API', () => {
     });
   });
 
-  describe('TimeSlot DST Handling', () => {
+  describe('TimeSlot Daylight Saving Time Handling', () => {
     beforeEach(async () => {
       await pool.query('DELETE FROM time_slots');
     });
