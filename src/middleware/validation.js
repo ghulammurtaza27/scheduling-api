@@ -1,14 +1,14 @@
 const { body, query, param, validationResult } = require('express-validator');
 const pool = require('../config/database');
 
-// Time slot creation validation rules
+// Time slot creation rules
 const timeSlotCreate = [
-  // Basic fields
+  // Ensure consultant exists
   body('consultant_id')
     .isUUID()
     .withMessage('Invalid consultant ID format'),
 
-  // Time validation
+  // Validate time slot boundaries
   body('start_time')
     .isISO8601()
     .withMessage('Invalid start time format'),
@@ -33,6 +33,7 @@ const timeSlotCreate = [
     .isISO8601()
     .withMessage('Invalid until date format'),
 
+  // Optional notes field
   body('notes')
     .optional()
     .isString()
@@ -40,7 +41,7 @@ const timeSlotCreate = [
     .withMessage('Notes must not exceed 1000 characters'),
 ];
 
-// Query parameters validation
+// Search and filter validation
 const timeSlotQuery = [
   query('consultant_id')
     .optional()
@@ -70,7 +71,7 @@ const timeSlotQuery = [
     .toInt()
 ];
 
-// Reservation validation
+// Booking validation
 const slotReservation = [
   param('slotId')
     .isUUID()
@@ -85,8 +86,7 @@ const slotReservation = [
     .custom(validateCustomerExists)
 ];
 
-
-
+// Check if slot is available for booking
 async function validateSlotAvailability(value) {
   const slot = await pool.query(
     'SELECT is_booked FROM time_slots WHERE id = $1',
@@ -97,6 +97,7 @@ async function validateSlotAvailability(value) {
   return true;
 }
 
+// Verify customer exists in database
 async function validateCustomerExists(value) {
   const customer = await pool.query(
     'SELECT id FROM customers WHERE id = $1',
@@ -108,7 +109,7 @@ async function validateCustomerExists(value) {
   return true;
 }
 
-// Validation result handler
+// Format validation errors for response
 function validateRequest(req, res, next) {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {

@@ -41,11 +41,10 @@ describe('Time Slots API', () => {
         CREATE TABLE recurring_patterns (
           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
           frequency VARCHAR(10) NOT NULL,
-          day_of_week INTEGER,
-          day_of_month INTEGER,
           until_date TIMESTAMP NOT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT check_frequency CHECK (frequency IN ('weekly', 'monthly'))
         );
 
         CREATE TABLE time_slots (
@@ -159,7 +158,6 @@ describe('Time Slots API', () => {
           end_time: "2025-03-22T17:00:00Z",
           recurring: {
             frequency: "weekly",
-            day_of_week: 6,
             until: "2025-07-15T00:00:00Z"
           }
         });
@@ -177,7 +175,6 @@ describe('Time Slots API', () => {
           end_time: "2025-03-15T17:00:00Z",
           recurring: {
             frequency: "monthly",
-            day_of_month: 15,
             until: "2025-07-15T00:00:00Z"
           }
         });
@@ -487,24 +484,6 @@ describe('Time Slots API', () => {
           end_time: "17:00",
           recurring: {
             frequency: "invalid",
-            day_of_week: 8,
-            until: "2025-07-15T00:00:00Z"
-          }
-        });
-
-      expect(response.status).toBe(400);
-    });
-
-    it('should handle invalid day_of_week values', async () => {
-      const response = await request(app)
-        .post('/api/time-slots')
-        .send({
-          consultant_id: mockConsultant.id,
-          start_time: "14:00",
-          end_time: "15:00",
-          recurring: {
-            frequency: "weekly",
-            day_of_week: 8, // Invalid: days are 0-6
             until: "2025-07-15T00:00:00Z"
           }
         });
@@ -521,7 +500,6 @@ describe('Time Slots API', () => {
           end_time: "15:00",
           recurring: {
             frequency: "weekly",
-            day_of_week: 1,
             until: "2020-07-15T00:00:00Z"
           }
         });

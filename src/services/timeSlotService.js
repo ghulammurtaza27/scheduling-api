@@ -10,11 +10,6 @@ const moment = require('moment-timezone');
  */
 class TimeSlotService {
   
-
-  
-
- 
-  
   /**
    * Retrieves a time slot by ID
    * @param {string} slotId - UUID of the slot
@@ -218,9 +213,7 @@ class TimeSlotService {
       let baseQuery = `
         SELECT ts.*, 
                COALESCE(c.name, 'Unknown') as consultant_name,
-               rp.frequency,
-               rp.day_of_week,
-               rp.day_of_month
+               rp.frequency
         FROM time_slots ts
         LEFT JOIN consultants c ON ts.consultant_id = c.id
         LEFT JOIN recurring_patterns rp ON ts.recurring_pattern_id = rp.id
