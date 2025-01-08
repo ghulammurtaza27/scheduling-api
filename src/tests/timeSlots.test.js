@@ -511,7 +511,7 @@ describe('Time Slots API', () => {
       expect(response.status).toBe(400);
     });
 
-    it('should handle invalid until date (past)', async () => {
+    it('should handle invalid "until" date (past)', async () => {
       const response = await request(app)
         .post('/api/time-slots')
         .send({

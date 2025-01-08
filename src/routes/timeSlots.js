@@ -1,29 +1,27 @@
 const express = require('express');
 const router = express.Router();
 const timeSlotController = require('../controllers/timeSlotController');
-const { validateRequest, timeSlotCreate, timeSlotQuery, slotReservation } = require('../middleware/validation');
+const { timeSlotCreate, validateRequest } = require('../middleware/validation');
 
-router.post('/', 
-  timeSlotCreate, 
-  validateRequest, 
+// Create time slot
+router.post('/',
+  timeSlotCreate,
+  validateRequest,
   timeSlotController.createTimeSlot.bind(timeSlotController)
 );
 
-router.post('/:slotId/reserve', 
-  slotReservation, 
-  validateRequest, 
-  timeSlotController.reserveTimeSlot.bind(timeSlotController)
-);
-
-router.get('/', 
-  timeSlotQuery, 
-  validateRequest, 
+// Get time slots
+router.get('/',
   timeSlotController.getTimeSlots.bind(timeSlotController)
 );
 
+// Reserve time slot
+router.post('/:slotId/reserve',
+  timeSlotController.reserveTimeSlot.bind(timeSlotController)
+);
+
+// Delete time slot
 router.delete('/:slotId',
-  timeSlotController.deleteValidation,
-  validateRequest,
   timeSlotController.deleteTimeSlot.bind(timeSlotController)
 );
 

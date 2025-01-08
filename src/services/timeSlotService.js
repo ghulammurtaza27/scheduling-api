@@ -1,93 +1,131 @@
 const pool = require('../config/database');
 const AppError = require('../utils/AppError');
 const { PAGINATION, TIME_SLOTS } = require('../config/constants');
+const { withTransaction } = require('../utils/dbTransaction');
 
 class TimeSlotService {
+  #isValidDate(year, month, day) {
+    const date = new Date(Date.UTC(year, month, day));
+    return date.getUTCFullYear() === year &&
+           date.getUTCMonth() === month &&
+           date.getUTCDate() === day;
+  }
+
+  #createUTCDate(hours, minutes, baseDate) {
+    const year = baseDate.getUTCFullYear();
+    const month = baseDate.getUTCMonth();
+    const day = baseDate.getUTCDate();
+
+    if (!this.#isValidDate(year, month, day)) {
+      throw new AppError('Invalid date', 400);
+    }
+
+    return new Date(Date.UTC(year, month, day, hours, minutes, 0, 0));
+  }
+
+  #handleRecurringDate(now, recurring) {
+    if (recurring.frequency === 'weekly' && 'day_of_week' in recurring) {
+      const daysToAdd = (recurring.day_of_week - now.getUTCDay() + 7) % 7;
+      const date = new Date(now);
+      date.setUTCDate(date.getUTCDate() + daysToAdd);
+      return date;
+    }
+    
+    if (recurring.frequency === 'monthly' && 'day_of_month' in recurring) {
+      // Validate day_of_month is real for the target month
+      const year = now.getUTCFullYear();
+      const month = now.getUTCMonth();
+      const day = recurring.day_of_month;
+
+      if (!this.#isValidDate(year, month, day)) {
+        throw new AppError(`Invalid day of month: ${day}`, 400);
+      }
+
+      const date = new Date(Date.UTC(year, month, day));
+      
+      if (date < now) {
+        // Check next month's date is valid too
+        if (!this.#isValidDate(year, month + 1, day)) {
+          throw new AppError(`Invalid day for next month: ${day}`, 400);
+        }
+        date.setUTCMonth(date.getUTCMonth() + 1);
+      }
+      return date;
+    }
+    
+    throw new AppError('Invalid recurring pattern', 400);
+  }
+
   #validateTimeRange(start_time, end_time, recurring = null) {
+    const now = new Date();
     let start, end;
 
-    if (recurring && start_time.includes(':') && !start_time.includes('T')) {
+    // Handle HH:MM format
+    if (start_time.includes(':') && !start_time.includes('T')) {
       const [startHours, startMinutes] = start_time.split(':').map(Number);
       const [endHours, endMinutes] = end_time.split(':').map(Number);
-      
-      const now = new Date();
-      
-      // Handle different recurring patterns
-      if (recurring.frequency === 'weekly' && recurring.day_of_week !== undefined) {
-        const targetDay = recurring.day_of_week;
-        const currentDay = now.getUTCDay();
-        const daysToAdd = (targetDay - currentDay + 7) % 7;
 
-        // Create date in UTC
-        start = new Date(Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          now.getUTCDate() + daysToAdd,
-          startHours,
-          startMinutes,
-          0,
-          0
-        ));
-      } else if (recurring.frequency === 'monthly' && recurring.day_of_month !== undefined) {
-        // Create date in UTC
-        start = new Date(Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          recurring.day_of_month,
-          startHours,
-          startMinutes,
-          0,
-          0
-        ));
-        
-        if (start < now) {
-          start.setUTCMonth(start.getUTCMonth() + 1);
-        }
-      } else {
-        throw new AppError('Invalid recurring pattern', 400);
+      const baseDate = recurring ? 
+        this.#handleRecurringDate(now, recurring) : 
+        now;
+
+      start = this.#createUTCDate(startHours, startMinutes, baseDate);
+      end = this.#createUTCDate(endHours, endMinutes, baseDate);
+
+      if (recurring?.until && new Date(recurring.until) <= now) {
+        throw new AppError('Until date must be in the future', 400);
       }
-
-      if (recurring.until) {
-        const untilDate = new Date(recurring.until);
-        if (untilDate <= now) {
-          throw new AppError('Until date must be in the future', 400);
-        }
-      }
-
-      // Create end time in UTC
-      end = new Date(Date.UTC(
-        start.getUTCFullYear(),
-        start.getUTCMonth(),
-        start.getUTCDate(),
-        endHours,
-        endMinutes,
-        0,
-        0
-      ));
 
       if (end < start) {
         end.setUTCDate(end.getUTCDate() + 1);
       }
 
       if (start < now) {
-        if (recurring.frequency === 'weekly') {
-          start.setUTCDate(start.getUTCDate() + 7);
-          end.setUTCDate(end.getUTCDate() + 7);
+        const shift = recurring?.frequency === 'weekly' ? 7 : 1;
+        const method = recurring?.frequency === 'weekly' ? 'setUTCDate' : 'setUTCMonth';
+        const amount = recurring?.frequency === 'weekly' ? 
+          start.getUTCDate() + shift : 
+          start.getUTCMonth() + shift;
+
+        if (recurring) {
+          start[method](amount);
+          end[method](amount);
         } else {
-          start.setUTCMonth(start.getUTCMonth() + 1);
-          end.setUTCMonth(end.getUTCMonth() + 1);
+          throw new AppError('Cannot create slots in the past', 400);
         }
       }
     } else {
-      start = new Date(start_time);
-      end = new Date(end_time);
+      // Handle ISO format with validation
+      const startDate = new Date(start_time);
+      const endDate = new Date(end_time);
+
+      // Validate the dates are real
+      if (!this.#isValidDate(
+        startDate.getUTCFullYear(),
+        startDate.getUTCMonth(),
+        startDate.getUTCDate()
+      )) {
+        throw new AppError('Invalid start date', 400);
+      }
+
+      if (!this.#isValidDate(
+        endDate.getUTCFullYear(),
+        endDate.getUTCMonth(),
+        endDate.getUTCDate()
+      )) {
+        throw new AppError('Invalid end date', 400);
+      }
+
+      start = startDate;
+      end = endDate;
     }
-    
+
+    // Validate time constraints
     if (start >= end) {
       throw new AppError('End time must be after start time', 400);
     }
 
-    if (!recurring && start < new Date()) {
+    if (!recurring && start < now) {
       throw new AppError('Cannot create slots in the past', 400);
     }
 
@@ -101,6 +139,66 @@ class TimeSlotService {
     }
 
     return { start, end };
+  }
+
+  async createTimeSlot(consultant_id, start_time, end_time, recurring = null) {
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      const { start, end } = this.#validateTimeRange(start_time, end_time, recurring);
+      const startIso = start.toISOString();
+      const endIso = end.toISOString();
+
+      if (recurring) {
+        const { rows: [pattern] } = await client.query(
+          `INSERT INTO recurring_patterns (frequency, day_of_week, day_of_month, until_date)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id`,
+          [recurring.frequency, recurring.day_of_week, recurring.day_of_month, recurring.until]
+        );
+
+        const { rows: [slot] } = await client.query(
+          `INSERT INTO time_slots (consultant_id, start_time, end_time, recurring_pattern_id)
+           VALUES ($1, $2, $3, $4)
+           RETURNING *`,
+          [consultant_id, startIso, endIso, pattern.id]
+        );
+
+        await client.query('COMMIT');
+        return { status: 'success', statusCode: 201, data: slot };
+      }
+
+      // Check for overlapping slots
+      const { rows: overlaps } = await client.query(
+        `SELECT id FROM time_slots 
+         WHERE consultant_id = $1 
+         AND NOT is_booked
+         AND tsrange(start_time, end_time) && tsrange($2::timestamp, $3::timestamp)
+         AND NOT (start_time = $3::timestamp OR end_time = $2::timestamp)`,
+        [consultant_id, startIso, endIso]
+      );
+
+      if (overlaps.length > 0) {
+        throw new AppError('Time slot overlaps with existing slot', 400);
+      }
+
+      const { rows: [slot] } = await client.query(
+        `INSERT INTO time_slots (consultant_id, start_time, end_time)
+         VALUES ($1, $2, $3)
+         RETURNING *`,
+        [consultant_id, startIso, endIso]
+      );
+
+      await client.query('COMMIT');
+      return { status: 'success', statusCode: 201, data: slot };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async getTimeSlots({ consultant_id, date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT, include_booked = false }) {
@@ -183,187 +281,89 @@ class TimeSlotService {
     }
   }
 
-  async createTimeSlot(consultant_id, start_time, end_time, recurring = null) {
-    const client = await pool.connect();
-    
-    try {
-      await client.query('BEGIN');
-      
-      const { start, end } = this.#validateTimeRange(start_time, end_time, recurring);
-      
-      // Store dates as ISO strings
-      const startIso = start.toISOString();
-      const endIso = end.toISOString();
-
-      if (recurring) {
-        // Create recurring pattern
-        const patternResult = await client.query(
-          `INSERT INTO recurring_patterns 
-           (frequency, day_of_week, day_of_month, until_date)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id`,
-          [recurring.frequency, recurring.day_of_week, recurring.day_of_month, recurring.until]
-        );
-
-        const pattern_id = patternResult.rows[0].id;
-
-        // Create the time slot with recurring pattern
-        const result = await client.query(
-          `INSERT INTO time_slots 
-           (consultant_id, start_time, end_time, recurring_pattern_id)
-           VALUES ($1, $2, $3, $4)
-           RETURNING *`,
-          [consultant_id, startIso, endIso, pattern_id]
-        );
-
-        await client.query('COMMIT');
-        return {
-          status: 'success',
-          statusCode: 201,
-          data: result.rows[0]
-        };
-      }
-
-      // Check for overlapping slots
-      const overlapCheck = await client.query(
-        `SELECT id FROM time_slots 
-         WHERE consultant_id = $1 
-         AND NOT is_booked
-         AND tsrange(start_time, end_time) && tsrange($2::timestamp, $3::timestamp)
-         AND NOT (start_time = $3::timestamp OR end_time = $2::timestamp)`,
-        [consultant_id, startIso, endIso]
-      );
-
-      if (overlapCheck.rows.length > 0) {
-        throw new AppError('Time slot overlaps with existing slot', 400);
-      }
-
-      const result = await client.query(
-        `INSERT INTO time_slots 
-         (consultant_id, start_time, end_time)
-         VALUES ($1, $2, $3)
-         RETURNING *`,
-        [consultant_id, startIso, endIso]
-      );
-
-      await client.query('COMMIT');
-      return {
-        status: 'success',
-        statusCode: 201,
-        data: result.rows[0]
-      };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-
   async reserveTimeSlot(slotId, customerId) {
-    if (!slotId || !customerId) {
-      throw new AppError('Slot ID and Customer ID are required', 400);
-    }
-
-    const client = await pool.connect();
-    
-    try {
-      await client.query('BEGIN');
-
-      // Check if customer exists first
-      const customerCheck = await client.query(
-        'SELECT id FROM customers WHERE id = $1',
-        [customerId]
-      );
-
-      if (!customerCheck?.rows?.length) {
-        throw new AppError('Customer not found', 404);
-      }
-
-      // Check if slot exists and is available
-      const slotCheck = await client.query(
-        'SELECT * FROM time_slots WHERE id = $1',
+    return withTransaction(async (client) => {
+      // Get slot with lock
+      const { rows: [slot] } = await client.query(
+        'SELECT * FROM time_slots WHERE id = $1 FOR UPDATE',
         [slotId]
       );
 
-      if (!slotCheck?.rows?.length) {
-        throw new AppError('Time slot not found', 404);
+      if (!slot) {
+        throw new AppError('Time slot not found', 400);
       }
 
-      if (slotCheck.rows[0].is_booked) {
-        throw new AppError('Time slot is already booked', 400);
+      if (slot.is_booked) {
+        throw new AppError('Time slot is not available', 400);
       }
 
-      // Update the slot
-      const result = await client.query(
+      const { rows: [updatedSlot] } = await client.query(
         `UPDATE time_slots 
-         SET is_booked = true, 
-             customer_id = $1,
-             updated_at = NOW()
+         SET is_booked = true, customer_id = $1, updated_at = NOW()
          WHERE id = $2 AND NOT is_booked
          RETURNING *`,
         [customerId, slotId]
       );
 
-      if (!result?.rows?.[0]) {
-        throw new AppError('Failed to reserve time slot', 500);
+      if (!updatedSlot) {
+        throw new AppError('Time slot is not available', 400);
       }
 
-      await client.query('COMMIT');
-      return {
-        status: 'success',
-        statusCode: 200,
-        data: result.rows[0]
-      };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+      return { data: updatedSlot };
+    });
   }
 
   async deleteTimeSlot(slotId) {
-    const client = await pool.connect();
-    
-    try {
-      await client.query('BEGIN');
-
-      const slotCheck = await client.query(
-        `SELECT recurring_pattern_id FROM time_slots WHERE id = $1`,
+    return withTransaction(async (client) => {
+      const { rows: [slot] } = await client.query(
+        'SELECT * FROM time_slots WHERE id = $1',
         [slotId]
       );
 
-      if (!slotCheck.rows.length) {
-        throw new AppError('Time slot not found', 404);
+      if (!slot) {
+        throw new AppError('Time slot not found', 400);
       }
 
-      if (slotCheck.rows[0].recurring_pattern_id) {
-        await client.query(
-          `DELETE FROM time_slots
-           WHERE recurring_pattern_id = $1
-             AND start_time >= NOW()
-             AND is_booked = FALSE`,
-          [slotCheck.rows[0].recurring_pattern_id]
-        );
-      } else {
-        await client.query(
-          `DELETE FROM time_slots 
-           WHERE id = $1 AND is_booked = FALSE`,
-          [slotId]
-        );
+      if (slot.is_booked) {
+        throw new AppError('Cannot delete booked time slots', 400);
       }
 
-      await client.query('COMMIT');
-      return {
-        statusCode: 200,
-        message: 'Time slot(s) deleted successfully'
-      };
+      await client.query(
+        'DELETE FROM time_slots WHERE id = $1 AND NOT is_booked',
+        [slotId]
+      );
+
+      return { message: 'Time slot deleted successfully' };
+    });
+  }
+
+  async getSlotById(slotId) {
+    try {
+      const { rows: [slot] } = await pool.query(
+        'SELECT * FROM time_slots WHERE id = $1',
+        [slotId]
+      );
+      return slot;
     } catch (err) {
-      await client.query('ROLLBACK');
+      if (err.code === '22P02') { // Invalid UUID format
+        throw new AppError('Invalid slot ID format', 400);
+      }
       throw err;
-    } finally {
-      client.release();
+    }
+  }
+
+  async checkCustomerExists(customerId) {
+    try {
+      const { rows: [customer] } = await pool.query(
+        'SELECT id FROM customers WHERE id = $1',
+        [customerId]
+      );
+      return !!customer;
+    } catch (err) {
+      if (err.code === '22P02') { // Invalid UUID format
+        throw new AppError('Invalid customer ID format', 400);
+      }
+      throw err;
     }
   }
 }

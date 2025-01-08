@@ -1,26 +1,28 @@
 const { body, query, param, validationResult } = require('express-validator');
+const { isISODateFormat, isTimeFormat } = require('../utils/dateValidation');
 const pool = require('../config/database');
 const AppError = require('../utils/AppError');
 
 const timeSlotCreate = [
   body('consultant_id').isUUID(),
-  body('start_time').custom((value, { req }) => {
-    // If recurring, accept time string in HH:mm format
-    if (req.body.recurring) {
-      return /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(value);
-    }
-    // Otherwise require ISO 8601
-    return new Date(value).toString() !== 'Invalid Date';
-  }).withMessage('Start time must be a valid ISO 8601 date or HH:mm format for recurring slots'),
   
-  body('end_time').custom((value, { req }) => {
-    // If recurring, accept time string in HH:mm format
-    if (req.body.recurring) {
-      return /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(value);
-    }
-    // Otherwise require ISO 8601
-    return new Date(value).toString() !== 'Invalid Date';
-  }).withMessage('End time must be a valid ISO 8601 date or HH:mm format for recurring slots'),
+  body('start_time')
+    .custom((value) => {
+      if (isISODateFormat(value) || isTimeFormat(value)) {
+        return true;
+      }
+      throw new Error('Invalid format');
+    })
+    .withMessage('Invalid date/time format'),
+  
+  body('end_time')
+    .custom((value) => {
+      if (isISODateFormat(value) || isTimeFormat(value)) {
+        return true;
+      }
+      throw new Error('Invalid format');
+    })
+    .withMessage('Invalid date/time format'),
 
   body('recurring').optional().isObject(),
   body('recurring.frequency').if(body('recurring').exists())
