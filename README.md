@@ -1,18 +1,17 @@
 # Scheduling API
 
-A REST API for managing consultant scheduling and appointments, supporting both single and recurring time slots.
+A RESTful API for managing consultant time slots, built with Node.js, Express, and PostgreSQL.
 
 ## Features
 
-- Create single and recurring time slots
-- Book appointments
-- View available time slots with filtering options
-- Delete time slots (single or recurring)
-- Transaction-based operations
-- Input validation and sanitization
-- Overlap prevention
-- Error handling
-- Comprehensive testing
+- ✨ Create single and recurring time slots
+- 📅 Weekly and monthly recurring patterns
+- 🔍 Filter slots by date, month, and consultant
+- 📊 Pagination support
+- 🔒 Concurrent booking protection
+- ✅ Input validation
+- 🚫 Overlap prevention
+- 📝 Comprehensive error handling
 
 ## Prerequisites
 
@@ -20,7 +19,7 @@ A REST API for managing consultant scheduling and appointments, supporting both 
 - PostgreSQL (v12 or higher)
 - npm or yarn
 
-## Setup
+## Installation
 
 1. Clone the repository:
 
@@ -38,17 +37,9 @@ npm install
 ```
 
 3. Set up environment variables:
-
-Create `.env` file:
-
-```env
-DATABASE_URL=postgresql://postgres:your_password@localhost:5432/timeslots
-PORT=3000
-DB_USER=postgres
-DB_PASSWORD=your_password
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=timeslots
+```bash
+cp .env.example .env
+# Edit .env with your database credentials
 ```
 
 4. Initialize the database:
@@ -60,22 +51,22 @@ psql timeslots -f src/db/init.sql
 
 ## Running the Application
 
-Development:
+Development mode:
 ```bash
 npm run dev
 ```
 
-Production:
+Production mode:
 ```bash
 npm start
 ```
 
-Tests:
+Run tests:
 ```bash
 npm test
 ```
 
-## API Documentation
+## API Endpoints
 
 ### Time Slots
 
@@ -124,10 +115,13 @@ npm test
   ```
 
 #### Delete Time Slot
-- `DELETE /api/time-slots/:slotId`
-  - Deletes single slot or all future instances of recurring slot
+```http
+DELETE /api/time-slots/:slotId
+```
+- Deletes unreserved slots
+- Prevents deletion of booked slots
 
-## Response Formats
+## Data Validation
 
 ### Success Response
 ```json
@@ -145,11 +139,12 @@ npm test
 }
 ```
 
-### Error Response
+The API returns consistent error responses:
 ```json
 {
-    "success": false,
-    "error": "Error message"
+  "success": false,
+  "error": "Error message",
+  "details": "Detailed error description"
 }
 ```
 
@@ -197,7 +192,7 @@ The API returns appropriate HTTP status codes:
 
 ## Testing
 
-The application includes:
+The project includes comprehensive tests:
 - Unit tests
 - Integration tests
 - Edge case handling
