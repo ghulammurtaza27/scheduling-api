@@ -9,49 +9,9 @@ const moment = require('moment-timezone');
  * Handles creation, retrieval, reservation, and deletion of time slots
  */
 class TimeSlotService {
-  /**
-   * Validates if a given date is valid
-   * @param {number} year - Full year (e.g., 2024)
-   * @param {number} month - Month (0-11)
-   * @param {number} day - Day of month (1-31)
-   * @returns {boolean} True if date is valid
-   * @private
-   */
-  #isValidDate(year, month, day) {
-    const date = new Date(Date.UTC(year, month, day));
-    return date.getUTCFullYear() === year &&
-           date.getUTCMonth() === month &&
-           date.getUTCDate() === day;
-  }
+  
 
-  /**
-   * Creates a UTC date from hours and minutes
-   * @param {string} dateTimeStr - ISO date string or time string
-   * @param {string} timezone - Timezone (defaults to UTC)
-   * @returns {Date} UTC date object
-   * @throws {AppError} If date is invalid
-   * @private
-   */
-  #createUTCDate(dateTimeStr, timezone = 'UTC') {
-    // If it's already an ISO string, just parse it
-    if (dateTimeStr.includes('T')) {
-      const date = moment.tz(dateTimeStr, timezone);
-      if (!date.isValid()) {
-        throw new AppError('Invalid date format', 400);
-      }
-      return date.toDate();
-    }
-
-    // If it's just time (HH:mm), use current date
-    const [hours, minutes] = dateTimeStr.split(':').map(Number);
-    const date = moment.tz(timezone);
-    date.hours(hours);
-    date.minutes(minutes);
-    date.seconds(0);
-    date.milliseconds(0);
-
-    return date.toDate();
-  }
+  
 
  
   
