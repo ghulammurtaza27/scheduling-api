@@ -1,5 +1,4 @@
 const { body, query, param, validationResult } = require('express-validator');
-const { isISODateFormat, isTimeFormat } = require('../utils/dateValidation');
 const pool = require('../config/database');
 
 // Time slot creation validation rules
@@ -86,13 +85,7 @@ const slotReservation = [
     .custom(validateCustomerExists)
 ];
 
-// Helper functions
-function validateDateTime(value) {
-  if (isISODateFormat(value) || isTimeFormat(value)) {
-    return true;
-  }
-  throw new Error('Invalid format');
-}
+
 
 async function validateSlotAvailability(value) {
   const slot = await pool.query(
