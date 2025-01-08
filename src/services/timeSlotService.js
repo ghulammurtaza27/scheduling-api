@@ -283,7 +283,7 @@ class TimeSlotService {
    * @returns {Promise<Object>} Paginated time slots
    */
   async getTimeSlots(query) {
-    const { consultant_id, date, month, page = 1, include_booked = false } = query;
+    const { consultant_id, start_date, end_date, date, month, page = 1, include_booked = false } = query;
     
     // Enforce maximum page size
     let limit = parseInt(query.limit) || PAGINATION.DEFAULT_LIMIT;
@@ -314,6 +314,20 @@ class TimeSlotService {
         paramCount++;
       }
 
+      // Add date range filtering
+      if (start_date) {
+        baseQuery += ` AND DATE(ts.start_time) >= DATE($${paramCount})`;
+        queryParams.push(query.start_date);
+        paramCount++;
+      }
+
+      if (end_date) {
+        baseQuery += ` AND DATE(ts.start_time) <= DATE($${paramCount})`;
+        queryParams.push(query.end_date);
+        paramCount++;
+      }
+
+      // Keep existing date and month filters if needed
       if (date) {
         baseQuery += ` AND DATE(ts.start_time) = $${paramCount}`;
         queryParams.push(date);

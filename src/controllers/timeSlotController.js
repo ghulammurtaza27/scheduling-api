@@ -74,6 +74,26 @@ class TimeSlotController {
         }
       }
 
+      // Add date range validation
+      if (req.query.start_date && req.query.end_date) {
+        const startDate = new Date(req.query.start_date);
+        const endDate = new Date(req.query.end_date);
+        
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+          return ResponseHandler.error(res, {
+            statusCode: 400,
+            message: 'Invalid date format. Use YYYY-MM-DD'
+          });
+        }
+
+        if (endDate < startDate) {
+          return ResponseHandler.error(res, {
+            statusCode: 400,
+            message: 'End date must be after start date'
+          });
+        }
+      }
+
       const result = await timeSlotService.getTimeSlots(req.query);
       return ResponseHandler.success(res, {
         statusCode: 200,
