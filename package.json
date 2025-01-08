@@ -20,7 +20,9 @@
     "pg": "^8.13.1",
     "uuid": "^11.0.4",
     "xss": "^1.0.14",
-    "validator": "^13.9.0"
+    "validator": "^13.9.0",
+    "moment": "^2.29.4",
+    "moment-timezone": "^0.5.43"
   },
   "devDependencies": {
     "jest": "^29.7.0",

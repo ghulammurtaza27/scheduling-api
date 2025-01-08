@@ -2,6 +2,7 @@ const pool = require('../config/database');
 const AppError = require('../utils/AppError');
 const { PAGINATION, TIME_SLOTS } = require('../config/constants');
 const { withTransaction } = require('../utils/dbTransaction');
+const moment = require('moment-timezone');
 
 /**
  * Service class for managing time slots
@@ -25,23 +26,31 @@ class TimeSlotService {
 
   /**
    * Creates a UTC date from hours and minutes
-   * @param {number} hours - Hours (0-23)
-   * @param {number} minutes - Minutes (0-59)
-   * @param {Date} baseDate - Base date to use
+   * @param {string} dateTimeStr - ISO date string or time string
+   * @param {string} timezone - Timezone (defaults to UTC)
    * @returns {Date} UTC date object
    * @throws {AppError} If date is invalid
    * @private
    */
-  #createUTCDate(hours, minutes, baseDate) {
-    const year = baseDate.getUTCFullYear();
-    const month = baseDate.getUTCMonth();
-    const day = baseDate.getUTCDate();
-
-    if (!this.#isValidDate(year, month, day)) {
-      throw new AppError('Invalid date', 400);
+  #createUTCDate(dateTimeStr, timezone = 'UTC') {
+    // If it's already an ISO string, just parse it
+    if (dateTimeStr.includes('T')) {
+      const date = moment.tz(dateTimeStr, timezone);
+      if (!date.isValid()) {
+        throw new AppError('Invalid date format', 400);
+      }
+      return date.toDate();
     }
 
-    return new Date(Date.UTC(year, month, day, hours, minutes, 0, 0));
+    // If it's just time (HH:mm), use current date
+    const [hours, minutes] = dateTimeStr.split(':').map(Number);
+    const date = moment.tz(timezone);
+    date.hours(hours);
+    date.minutes(minutes);
+    date.seconds(0);
+    date.milliseconds(0);
+
+    return date.toDate();
   }
 
   /**
@@ -91,82 +100,46 @@ class TimeSlotService {
    * @param {string} start_time - Start time (ISO or HH:mm format)
    * @param {string} end_time - End time (ISO or HH:mm format)
    * @param {Object} [recurring] - Recurring pattern
+   * @param {string} [timezone] - Timezone (defaults to UTC)
    * @returns {Object} Validated start and end dates
    * @throws {AppError} If validation fails
    * @private
    */
-  #validateTimeRange(start_time, end_time, recurring = null) {
-    const now = new Date();
+  #validateTimeRange(start_time, end_time, recurring = null, timezone = 'UTC') {
+    const now = moment.tz(timezone);
     let start, end;
 
-    if (start_time.includes(':') && !start_time.includes('T')) {
-      const [startHours, startMinutes] = start_time.split(':').map(Number);
-      const [endHours, endMinutes] = end_time.split(':').map(Number);
-
-      const baseDate = recurring ? 
-        this.#handleRecurringDate(now, recurring) : 
-        now;
-
-      start = this.#createUTCDate(startHours, startMinutes, baseDate);
-      end = this.#createUTCDate(endHours, endMinutes, baseDate);
-
-      if (recurring?.until && new Date(recurring.until) <= now) {
-        throw new AppError('Until date must be in the future', 400);
-      }
-
-      if (end < start) {
-        end.setUTCDate(end.getUTCDate() + 1);
-      }
-
-      if (start < now) {
-        if (!recurring) {
-          throw new AppError('Cannot create slots in the past', 400);
-        }
-        const shift = recurring.frequency === 'weekly' ? 7 : 1;
-        const method = recurring.frequency === 'weekly' ? 'setUTCDate' : 'setUTCMonth';
-        const amount = recurring.frequency === 'weekly' ? 
-          start.getUTCDate() + shift : 
-          start.getUTCMonth() + shift;
-
-        start[method](amount);
-        end[method](amount);
-      }
-    } else {
-      start = new Date(start_time);
-      end = new Date(end_time);
-
-      if (!this.#isValidDate(
-        start.getUTCFullYear(),
-        start.getUTCMonth(),
-        start.getUTCDate()
-      )) {
-        throw new AppError('Invalid start date', 400);
-      }
-
-      if (!this.#isValidDate(
-        end.getUTCFullYear(),
-        end.getUTCMonth(),
-        end.getUTCDate()
-      )) {
-        throw new AppError('Invalid end date', 400);
-      }
+    try {
+      start = this.#createUTCDate(start_time, timezone);
+      end = this.#createUTCDate(end_time, timezone);
+    } catch (err) {
+      throw new AppError('Invalid date/time format', 400);
     }
 
+    // Validate time range
     if (start >= end) {
       throw new AppError('End time must be after start time', 400);
     }
 
-    if (!recurring && start < now) {
+    // Check if slot is in the past
+    if (!recurring && moment(start).isBefore(now)) {
       throw new AppError('Cannot create slots in the past', 400);
     }
 
-    const durationMinutes = (end - start) / (1000 * 60);
+    // Validate duration
+    const durationMinutes = moment(end).diff(moment(start), 'minutes');
     if (durationMinutes < TIME_SLOTS.MIN_DURATION_MINUTES) {
-      throw new AppError(`Slot duration cannot be shorter than minimum duration (${TIME_SLOTS.MIN_DURATION_MINUTES} minutes)`, 400);
+      throw new AppError(
+        `Slot duration cannot be shorter than ${TIME_SLOTS.MIN_DURATION_MINUTES} minutes`,
+        400
+      );
     }
     
     if (durationMinutes > TIME_SLOTS.MAX_DURATION_MINUTES) {
-      throw new AppError(`Slot duration cannot exceed maximum duration (${TIME_SLOTS.MAX_DURATION_MINUTES} minutes)`, 400);
+      throw new AppError(
+        `Slot duration cannot exceed ${TIME_SLOTS.MAX_DURATION_MINUTES} minutes`,
+        400
+      );
     }
 
     return { start, end };
@@ -283,8 +256,16 @@ class TimeSlotService {
    * @returns {Promise<Object>} Paginated time slots
    */
   async getTimeSlots(query) {
-    const { consultant_id, start_date, end_date, date, month, page = 1, include_booked = false } = query;
+    const { consultant_id, start_date, end_date, date, month, page = 1, include_booked = false, timezone = 'UTC' } = query;
     
+    // Convert date filters to UTC
+    if (start_date) {
+      query.start_date = moment.tz(start_date, timezone).startOf('day').toISOString();
+    }
+    if (end_date) {
+      query.end_date = moment.tz(end_date, timezone).endOf('day').toISOString();
+    }
+
     // Enforce maximum page size
     let limit = parseInt(query.limit) || PAGINATION.DEFAULT_LIMIT;
     limit = Math.min(limit, PAGINATION.MAX_LIMIT);
