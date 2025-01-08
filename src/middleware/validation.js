@@ -1,21 +1,62 @@
 const { body, query, param, validationResult } = require('express-validator');
 const pool = require('../config/database');
+const moment = require('moment-timezone');
+const { TIME_SLOTS } = require('../config/constants');
 
 // Time slot creation rules
 const timeSlotCreate = [
-  // Ensure consultant exists
+  // Validate consultant exists
   body('consultant_id')
     .isUUID()
     .withMessage('Invalid consultant ID format'),
 
   // Validate time slot boundaries
-  body('start_time')
+  body(['start_time', 'end_time'])
     .isISO8601()
-    .withMessage('Invalid start time format'),
-  
-  body('end_time')
-    .isISO8601()
-    .withMessage('Invalid end time format'),
+    .withMessage('Invalid date/time format'),
+
+  // Validate end time is after start time
+  body(['start_time', 'end_time']).custom((value, { req }) => {
+    const start = moment(req.body.start_time);
+    const end = moment(req.body.end_time);
+    if (!end.isAfter(start)) {
+      throw new Error('End time must be after start time');
+    }
+    return true;
+  }),
+
+  // Validate time slot is in the future
+  body('start_time').custom(startTime => {
+    const start = moment(startTime);
+    const now = moment();
+    if (start.isBefore(now)) {
+      throw new Error('Cannot create slots in the past');
+    }
+    return true;
+  }),
+
+  // Validate duration
+  body(['start_time', 'end_time']).custom((value, { req }) => {
+    const start = moment(req.body.start_time);
+    const end = moment(req.body.end_time);
+    const durationMinutes = end.diff(start, 'minutes');
+    
+    if (durationMinutes < TIME_SLOTS.MIN_DURATION_MINUTES || 
+        durationMinutes > TIME_SLOTS.MAX_DURATION_MINUTES) {
+      throw new Error('Invalid slot duration');
+    }
+    return true;
+  }),
+
+  // Validate timezone
+  body('timezone')
+    .optional()
+    .custom(timezone => {
+      if (!moment.tz.zone(timezone)) {
+        throw new Error('Invalid timezone');
+      }
+      return true;
+    }),
 
   // Recurring pattern validation
   body('recurring')
@@ -76,51 +117,53 @@ const slotReservation = [
   param('slotId')
     .isUUID()
     .withMessage('Invalid slot ID format')
-    .custom(validateSlotAvailability),
+    .custom(async (value) => {
+      const slot = await pool.query(
+        'SELECT is_booked FROM time_slots WHERE id = $1',
+        [value]
+      );
+      if (!slot.rows.length) {
+        throw new Error('Time slot not found');
+      }
+      if (slot.rows[0].is_booked) {
+        throw new Error('Time slot is not available');
+      }
+      return true;
+    }),
   
   body('customer_id')
     .isUUID()
     .withMessage('Invalid customer ID format')
     .notEmpty()
     .withMessage('Customer ID is required')
-    .custom(validateCustomerExists)
+    .custom(async (value) => {
+      const customer = await pool.query(
+        'SELECT id FROM customers WHERE id = $1',
+        [value]
+      );
+      if (!customer.rows.length) {
+        throw new Error('Customer not found');
+      }
+      return true;
+    })
 ];
 
-// Check if slot is available for booking
-async function validateSlotAvailability(value) {
-  const slot = await pool.query(
-    'SELECT is_booked FROM time_slots WHERE id = $1',
-    [value]
-  );
-  if (!slot.rows.length) throw new Error('Time slot not found');
-  if (slot.rows[0].is_booked) throw new Error('Time slot is not available');
-  return true;
-}
-
-// Verify customer exists in database
-async function validateCustomerExists(value) {
-  const customer = await pool.query(
-    'SELECT id FROM customers WHERE id = $1',
-    [value]
-  );
-  if (!customer.rows.length) {
-    throw new Error('Customer not found');
-  }
-  return true;
-}
-
 // Format validation errors for response
-function validateRequest(req, res, next) {
+const validateRequest = (req, res, next) => {
   const errors = validationResult(req);
+  
   if (!errors.isEmpty()) {
+    // Get the first error message
     const firstError = errors.array()[0];
+    
     return res.status(400).json({
       success: false,
-      errors: errors.array()
+      error: firstError.msg  // Use the error message directly
     });
   }
+  
   next();
-}
+};
 
 module.exports = {
   timeSlotCreate,

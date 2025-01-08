@@ -7,12 +7,14 @@ const TimeSlotService = require('../services/timeSlotService');
 
 const mockConsultant = {
   id: uuidv4(),
-  name: 'Dr. Smith'
+  name: 'Dr. Test Smith',
+  email: 'test.smith@example.com'
 };
 
 const mockCustomer = {
   id: uuidv4(),
-  name: 'John Doe'
+  name: 'John Test',
+  email: 'john.test@example.com'
 };
 
 describe('Time Slots API', () => {
@@ -21,114 +23,73 @@ describe('Time Slots API', () => {
       await pool.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"');
 
       await pool.query(`
-        DROP TABLE IF EXISTS time_slots;
-        DROP TABLE IF EXISTS recurring_patterns;
-        DROP TABLE IF EXISTS customers;
-        DROP TABLE IF EXISTS consultants;
+        -- Drop tables if they exist
+        DROP TABLE IF EXISTS time_slots CASCADE;
+        DROP TABLE IF EXISTS customers CASCADE;
+        DROP TABLE IF EXISTS consultants CASCADE;
 
+        -- Create base tables
         CREATE TABLE consultants (
-          id UUID PRIMARY KEY,
+          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
           name VARCHAR(255) NOT NULL,
+          email VARCHAR(255) UNIQUE NOT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE customers (
-          id UUID PRIMARY KEY,
-          name VARCHAR(255) NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE recurring_patterns (
           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-          frequency VARCHAR(10) NOT NULL,
-          until_date TIMESTAMP NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          CONSTRAINT check_frequency CHECK (frequency IN ('weekly', 'monthly'))
+          name VARCHAR(255) NOT NULL,
+          email VARCHAR(255) UNIQUE NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE time_slots (
           id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-          consultant_id UUID REFERENCES consultants(id),
+          consultant_id UUID NOT NULL REFERENCES consultants(id),
           customer_id UUID REFERENCES customers(id),
           start_time TIMESTAMP NOT NULL,
           end_time TIMESTAMP NOT NULL,
           is_booked BOOLEAN DEFAULT FALSE,
-          recurring_pattern_id UUID REFERENCES recurring_patterns(id),
+          is_cancelled BOOLEAN DEFAULT FALSE,
+          cancelled_at TIMESTAMP,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT check_times CHECK (end_time > start_time)
         );
 
-        CREATE OR REPLACE FUNCTION create_recurring_slots(
-          p_consultant_id UUID,
-          p_start_time TIMESTAMP,
-          p_end_time TIMESTAMP,
-          p_pattern_id UUID,
-          p_until_date TIMESTAMP
-        ) RETURNS VOID AS $$
-        DECLARE
-          v_current_date TIMESTAMP;
-          v_pattern RECORD;
-          v_interval INTERVAL;
-        BEGIN
-          SELECT * INTO v_pattern FROM recurring_patterns WHERE id = p_pattern_id;
-          v_current_date := p_start_time;
-          
-          IF v_pattern.frequency = 'weekly' THEN
-            v_interval := '1 week'::INTERVAL;
-          ELSE
-            v_interval := '1 month'::INTERVAL;
-          END IF;
-          
-          WHILE v_current_date <= p_until_date LOOP
-            INSERT INTO time_slots (
-              consultant_id,
-              start_time,
-              end_time,
-              recurring_pattern_id
-            ) VALUES (
-              p_consultant_id,
-              v_current_date,
-              v_current_date + (p_end_time - p_start_time),
-              p_pattern_id
-            );
-            
-            v_current_date := v_current_date + v_interval;
-          END LOOP;
-        END;
-        $$ LANGUAGE plpgsql;
+        -- Create indexes
+        CREATE INDEX idx_time_slots_consultant ON time_slots(consultant_id);
+        CREATE INDEX idx_time_slots_customer ON time_slots(customer_id);
+        CREATE INDEX idx_time_slots_start_time ON time_slots(start_time);
       `);
 
       await pool.query(
-        'INSERT INTO consultants (id, name) VALUES ($1::uuid, $2)',
-        [mockConsultant.id, mockConsultant.name]
+        'INSERT INTO consultants (id, name, email) VALUES ($1::uuid, $2, $3)',
+        [mockConsultant.id, mockConsultant.name, mockConsultant.email]
       );
 
       await pool.query(
-        'INSERT INTO customers (id, name) VALUES ($1::uuid, $2)',
-        [mockCustomer.id, mockCustomer.name]
+        'INSERT INTO customers (id, name, email) VALUES ($1::uuid, $2, $3)',
+        [mockCustomer.id, mockCustomer.name, mockCustomer.email]
       );
 
     } catch (error) {
-      console.error('Test setup failed:', error);
+     
       throw error;
     }
   });
 
   afterEach(async () => {
-    await pool.query(`
-      DELETE FROM time_slots;
-      DELETE FROM recurring_patterns;
-    `);
+    // Clean up time_slots after each test
+    await pool.query('DELETE FROM time_slots');
   });
 
   afterAll(async () => {
     try {
+      // Drop all tables after tests
       await pool.query('DROP TABLE IF EXISTS time_slots CASCADE');
-      await pool.query('DROP TABLE IF EXISTS recurring_patterns CASCADE');
       await pool.query('DROP TABLE IF EXISTS customers CASCADE');
       await pool.query('DROP TABLE IF EXISTS consultants CASCADE');
-      await pool.query('DROP FUNCTION IF EXISTS create_recurring_slots CASCADE');
     } finally {
       await pool.end();
     }
@@ -263,52 +224,22 @@ describe('Time Slots API', () => {
   });
 
   describe('POST /api/time-slots/:slotId/reserve', () => {
-    let slotId;
-
-    beforeEach(async () => {
-      // Create a test slot and get its ID from the database
-      const createResult = await pool.query(
-        `INSERT INTO time_slots 
-         (consultant_id, start_time, end_time)
-         VALUES ($1, $2, $3)
-         RETURNING id`,
-        [
-          mockConsultant.id,
-          new Date("2025-03-22T14:00:00Z"),
-          new Date("2025-03-22T15:00:00Z")
-        ]
-      );
-      
-      slotId = createResult.rows[0].id;
-      console.log('Created slot with ID:', slotId);
-    });
-
     it('should prevent reserving an already booked slot', async () => {
-      // First reservation
-      const firstReserve = await request(app)
-        .post(`/api/time-slots/${slotId}/reserve`)
-        .send({
-          customer_id: mockCustomer.id
-        });
+      // Create a time slot
+      const timeSlot = await pool.query(
+        'INSERT INTO time_slots (id, consultant_id, start_time, end_time, is_booked) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+        [uuidv4(), mockConsultant.id, '2025-03-25T10:00:00Z', '2025-03-25T11:00:00Z', true]
+      );
 
-      console.log('First reserve response:', firstReserve.body);
-
-      // Attempt second reservation
       const response = await request(app)
-        .post(`/api/time-slots/${slotId}/reserve`)
+        .post(`/api/time-slots/${timeSlot.rows[0].id}/reserve`)
         .send({
           customer_id: mockCustomer.id
         });
-
-      console.log('Second reserve response:', response.body);
 
       expect(response.status).toBe(400);
       expect(response.body.success).toBe(false);
-      if (response.body.errors) {
-        expect(response.body.errors[0].msg).toBe('Time slot is not available');
-      } else {
-        expect(response.body.details).toBe('Time slot is not available');
-      }
+      expect(response.body.error).toBe('Time slot is not available');
     });
   });
 
@@ -330,7 +261,7 @@ describe('Time Slots API', () => {
       );
       
       slotId = createResult.rows[0].id;
-      console.log('Created slot with ID:', slotId);
+
     });
 
     it('should prevent deleting booked slots', async () => {
@@ -339,13 +270,12 @@ describe('Time Slots API', () => {
         .post(`/api/time-slots/${slotId}/reserve`)
         .send({ customer_id: mockCustomer.id });
 
-      console.log('Book response:', bookResponse.body);
 
       // Attempt to delete
       const response = await request(app)
         .delete(`/api/time-slots/${slotId}`);
 
-      console.log('Delete booked response:', response.body);
+
 
       expect(response.status).toBe(400);
       expect(response.body.success).toBe(false);
@@ -360,7 +290,6 @@ describe('Time Slots API', () => {
       const response = await request(app)
         .delete(`/api/time-slots/${uuidv4()}`);
 
-      console.log('Delete non-existent response:', response.body);
 
       expect(response.status).toBe(400);
       expect(response.body.success).toBe(false);
@@ -604,18 +533,23 @@ describe('Time Slots API', () => {
 
   describe('Error Handling', () => {
     it('should handle database connection errors gracefully', async () => {
-      // Temporarily break the database connection
+      // Save original implementations
       const originalPool = pool.query;
+      const originalConsoleError = console.error;
+      
+      // Mock implementations
       pool.query = jest.fn().mockRejectedValue(new Error('Database connection lost'));
-
+      console.error = jest.fn(); // Silence the error log
+      
       const response = await request(app)
         .get('/api/time-slots');
 
       expect(response.status).toBe(500);
       expect(response.body.error).toBeTruthy();
 
-      // Restore the database connection
+      // Restore original implementations
       pool.query = originalPool;
+      console.error = originalConsoleError;
     });
 
     it('should handle malformed UUID', async () => {

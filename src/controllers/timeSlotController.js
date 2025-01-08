@@ -53,68 +53,28 @@ class TimeSlotController {
 
   async getTimeSlots(req, res) {
     try {
-      const { month, page, limit } = req.query;
-      
-      // Validate page number
-      if (page) {
-        const pageNum = parseInt(page, 10);
-        if (isNaN(pageNum) || pageNum < 1) {
-          return ResponseHandler.error(res, {
-            statusCode: 400,
-            message: 'Invalid page number. Must be a positive integer'
-          });
-        }
-      }
-
-      // Validate month format if provided
-      if (month) {
-        if (!/^\d{4}-\d{2}$/.test(month)) {
-          return ResponseHandler.error(res, {
-            statusCode: 400,
-            message: 'Invalid month format. Use YYYY-MM'
-          });
-        }
-        
-        const [year, monthNum] = month.split('-').map(Number);
-        if (monthNum < 1 || monthNum > 12) {
-          return ResponseHandler.error(res, {
-            statusCode: 400,
-            message: 'Invalid month value'
-          });
-        }
-      }
-
-      // Check if dates are valid
-      if (req.query.start_date && req.query.end_date) {
-        const startDate = new Date(req.query.start_date);
-        const endDate = new Date(req.query.end_date);
-        
-        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-          return ResponseHandler.error(res, {
-            statusCode: 400,
-            message: 'Invalid date format. Use YYYY-MM-DD'
-          });
-        }
-
-        // Ensure date range is valid
-        if (endDate < startDate) {
-          return ResponseHandler.error(res, {
-            statusCode: 400,
-            message: 'End date must be after start date'
-          });
-        }
-      }
-
-      // Fetch time slots matching criteria
       const result = await timeSlotService.getTimeSlots(req.query);
-      return ResponseHandler.success(res, {
-        statusCode: 200,
-        data: result.data
+      
+      return res.status(200).json({
+        success: true,
+        ...result
       });
-    } catch (err) {
-      // Handle any errors that occurred
-      const error = ResponseHandler.handleDatabaseError(err);
-      return ResponseHandler.error(res, error);
+
+    } catch (error) {
+      // Handle AppError instances with specific status codes
+      if (error instanceof AppError) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message
+        });
+      }
+
+      // Handle unexpected errors
+      console.error('Error getting time slots:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to get time slots'
+      });
     }
   }
 

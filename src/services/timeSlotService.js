@@ -57,7 +57,7 @@ class TimeSlotService {
    */
   async createTimeSlot(consultant_id, start_time, end_time, recurring = null, timezone = 'UTC') {
     return withTransaction(async (client) => {
-      const { startUTC, endUTC, warnings } = this.#validateAndConvertTime(
+      const { startUTC, endUTC, warnings } = this.#convertTimeToUTC(
         start_time, 
         end_time, 
         timezone
@@ -103,38 +103,15 @@ class TimeSlotService {
   /**
    * Validates time range and converts to UTC
    */
-  #validateAndConvertTime(start_time, end_time, timezone) {
+  #convertTimeToUTC(start_time, end_time, timezone = 'UTC') {
     const start = moment.tz(start_time, timezone);
     const end = moment.tz(end_time, timezone);
-    const now = moment.tz(timezone);
     const warnings = [];
 
-    // Basic validation
-    if (!start.isValid() || !end.isValid()) {
-      throw new AppError('Invalid date/time format', 400);
-    }
-
-    if (!end.isAfter(start)) {
-      throw new AppError('End time must be after start time', 400);
-    }
-
-    if (start.isBefore(now)) {
-      throw new AppError('Cannot create slots in the past', 400);
-    }
-
-    // Check DST transition
     if (start.isDST() !== end.isDST()) {
       warnings.push('Time slot spans DST transition');
     }
 
-    // Validate duration
-    const durationMinutes = end.diff(start, 'minutes');
-    if (durationMinutes < TIME_SLOTS.MIN_DURATION_MINUTES || 
-        durationMinutes > TIME_SLOTS.MAX_DURATION_MINUTES) {
-      throw new AppError('Invalid slot duration', 400);
-    }
-
-    // Convert to UTC for storage
     return {
       startUTC: start.utc().toDate(),
       endUTC: end.utc().toDate(),
@@ -185,108 +162,89 @@ class TimeSlotService {
    * Retrieves time slots based on query parameters
    * @param {Object} query - Query parameters
    * @param {string} [query.consultant_id] - Filter by consultant
-   * @param {string} [query.date] - Filter by date
+   * @param {string} [query.start_date] - Filter by start date
+   * @param {string} [query.end_date] - Filter by end date
    * @param {string} [query.month] - Filter by month (YYYY-MM)
    * @param {number} [query.page=1] - Page number
    * @param {number} [query.limit] - Items per page
-   * @param {boolean} [query.include_booked=false] - Include booked slots
    * @returns {Promise<Object>} Paginated time slots
    */
   async getTimeSlots(query) {
-    const { consultant_id, start_date, end_date, date, month, page = 1, include_booked = false, timezone = 'UTC' } = query;
+    const { 
+      consultant_id, 
+      start_date, 
+      end_date, 
+      month, 
+      page = 1, 
+      limit = PAGINATION.DEFAULT_LIMIT 
+    } = query;
+
+    const limitNum = Math.min(parseInt(limit), PAGINATION.MAX_LIMIT);
+    const offset = (Math.max(1, parseInt(page)) - 1) * limitNum;
     
-    // Convert date filters to UTC
+    const queryParams = [];
+    let paramCount = 1;
+    let baseQuery = `
+      SELECT ts.*, 
+             c.name as consultant_name,
+             cu.name as customer_name
+      FROM time_slots ts
+      LEFT JOIN consultants c ON ts.consultant_id = c.id
+      LEFT JOIN customers cu ON ts.customer_id = cu.id
+      WHERE 1=1
+    `;
+
+    if (consultant_id) {
+      baseQuery += ` AND ts.consultant_id = $${paramCount}`;
+      queryParams.push(consultant_id);
+      paramCount++;
+    }
+
     if (start_date) {
-      query.start_date = moment.tz(start_date, timezone).startOf('day').toISOString();
+      baseQuery += ` AND DATE(ts.start_time) >= $${paramCount}`;
+      queryParams.push(start_date);
+      paramCount++;
     }
+
     if (end_date) {
-      query.end_date = moment.tz(end_date, timezone).endOf('day').toISOString();
+      baseQuery += ` AND DATE(ts.start_time) <= $${paramCount}`;
+      queryParams.push(end_date);
+      paramCount++;
     }
 
-    // Enforce maximum page size
-    let limit = parseInt(query.limit) || PAGINATION.DEFAULT_LIMIT;
-    limit = Math.min(limit, PAGINATION.MAX_LIMIT);
-    
-    try {
-      const queryParams = [];
-      let paramCount = 1;
-      let baseQuery = `
-        SELECT ts.*, 
-               COALESCE(c.name, 'Unknown') as consultant_name,
-               rp.frequency
-        FROM time_slots ts
-        LEFT JOIN consultants c ON ts.consultant_id = c.id
-        LEFT JOIN recurring_patterns rp ON ts.recurring_pattern_id = rp.id
-        WHERE ts.start_time >= NOW()
-      `;
+    if (month) {
+      baseQuery += ` AND TO_CHAR(ts.start_time, 'YYYY-MM') = $${paramCount}`;
+      queryParams.push(month);
+      paramCount++;
+    }
 
-      if (!include_booked) {
-        baseQuery += ` AND ts.is_booked = false`;
-      }
+    // Get total count
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM (${baseQuery}) AS count_query`,
+      queryParams
+    );
 
-      if (consultant_id) {
-        baseQuery += ` AND ts.consultant_id = $${paramCount}`;
-        queryParams.push(consultant_id);
-        paramCount++;
-      }
+    const totalItems = parseInt(countResult.rows[0].count);
+    const totalPages = Math.ceil(totalItems / limitNum);
 
-      // Add date range filtering
-      if (start_date) {
-        baseQuery += ` AND DATE(ts.start_time) >= DATE($${paramCount})`;
-        queryParams.push(query.start_date);
-        paramCount++;
-      }
+    // Get paginated results
+    const finalQuery = `${baseQuery} 
+      ORDER BY ts.start_time 
+      LIMIT ${limitNum} OFFSET ${offset}`;
 
-      if (end_date) {
-        baseQuery += ` AND DATE(ts.start_time) <= DATE($${paramCount})`;
-        queryParams.push(query.end_date);
-        paramCount++;
-      }
+    const result = await pool.query(finalQuery, queryParams);
 
-      // Keep existing date and month filters if needed
-      if (date) {
-        baseQuery += ` AND DATE(ts.start_time) = $${paramCount}`;
-        queryParams.push(date);
-        paramCount++;
-      }
-
-      if (month) {
-        const [year, monthNum] = month.split('-');
-        baseQuery += ` AND EXTRACT(YEAR FROM ts.start_time) = $${paramCount}
-                   AND EXTRACT(MONTH FROM ts.start_time) = $${paramCount + 1}`;
-        queryParams.push(year, parseInt(monthNum));
-        paramCount += 2;
-      }
-
-      const countResult = await pool.query(
-        `SELECT COUNT(*) FROM (${baseQuery}) AS count_query`,
-        queryParams
-      );
-
-      const totalItems = parseInt(countResult.rows[0].count);
-      const totalPages = Math.ceil(totalItems / limit);
-      const offset = ((parseInt(page) || 1) - 1) * limit;
-
-      const finalQuery = `${baseQuery} 
-        ORDER BY ts.start_time 
-        LIMIT ${limit} OFFSET ${offset}`;
-
-      const result = await pool.query(finalQuery, queryParams);
-
-      return {
-        data: {
-          time_slots: result.rows,
-          pagination: {
-            current_page: parseInt(page) || 1,
-            total_pages: totalPages,
-            total_items: totalItems,
-            limit: limit
-          }
+    return {
+      data: {
+        time_slots: result.rows,
+        pagination: {
+          current_page: parseInt(page),
+          total_pages: totalPages,
+          total_items: totalItems,
+          limit: limitNum
         }
-      };
-    } catch (err) {
-      throw err;
-    }
+      }
+    };
   }
 
   /**
