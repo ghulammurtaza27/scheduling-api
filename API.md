@@ -8,20 +8,24 @@ RESTful API for managing consultant time slots. Built with Express.js and Postgr
 http://localhost:3000/api
 ```
 
-## Time Formats
+## Time Handling
 - All times should be sent in ISO8601 format
 - Times can include timezone offset or use the timezone parameter
 - All responses return times in UTC (ISO8601 with Z suffix)
+- Client should handle timezone conversion for display
+- DST transitions are handled automatically
 
 ## Endpoints
 
-### Create Time Slot
+### 1. Create Time Slot
+Create a single or recurring time slot for a consultant.
+
 ```javascript
 POST /time-slots
 
 // Request
 {
-  consultant_id: string,    // UUID
+  consultant_id: string,    // Valid consultant UUID (required)
   start_time: string,      // "2025-03-26T08:00:00" or "2025-03-26T08:00:00+05:30"
   end_time: string,        // "2025-03-26T09:00:00" or "2025-03-26T09:00:00+05:30"
   timezone?: string,       // e.g., "Asia/Kolkata" (optional if offset provided in times)
@@ -31,12 +35,20 @@ POST /time-slots
   }
 }
 
+// Example
+{
+  "consultant_id": "valid-consultant-uuid",  // Must exist in database
+  "start_time": "2025-03-26T08:00:00",
+  "end_time": "2025-03-26T09:00:00",
+  "timezone": "Asia/Kolkata"
+}
+
 // Response
 {
   success: true,
   message: "Time slot created",
   data: {
-    id: string,           // UUID
+    id: string,           // Generated UUID
     consultant_id: string,
     customer_id: null,
     start_time: string,   // UTC ISO8601 "2025-03-26T02:30:00.000Z"
@@ -50,13 +62,15 @@ POST /time-slots
 }
 ```
 
-### Get Time Slots
+### 2. Get Time Slots
+Retrieve time slots with pagination and filtering options.
+
 ```javascript
 GET /time-slots
 
 // Query Parameters
 {
-  consultant_id?: string,  // UUID
+  consultant_id?: string,  // Valid consultant UUID (optional)
   start_date?: string,    // YYYY-MM-DD
   end_date?: string,      // YYYY-MM-DD
   month?: string,         // YYYY-MM
@@ -69,16 +83,16 @@ GET /time-slots
   success: true,
   data: {
     time_slots: [{
-      id: string,
+      id: string,           // UUID
       consultant_id: string,
       customer_id: string | null,
-      start_time: string,        // UTC ISO8601
-      end_time: string,          // UTC ISO8601
+      start_time: string,   // UTC ISO8601
+      end_time: string,     // UTC ISO8601
       is_booked: boolean,
       consultant_name: string,
       customer_name: string | null,
-      created_at: string,
-      updated_at: string
+      created_at: string,   // UTC timestamp
+      updated_at: string    // UTC timestamp
     }],
     pagination: {
       current_page: number,
@@ -90,33 +104,43 @@ GET /time-slots
 }
 ```
 
-### Reserve Time Slot
+### 3. Reserve Time Slot
+Book a time slot for a customer.
+
 ```javascript
 POST /time-slots/:slotId/reserve
 
-// Request
+// URL Parameters
+slotId: string            // Valid time slot UUID
+
+// Request Body
 {
-  customer_id: string  // UUID
+  customer_id: string     // Valid customer UUID (required)
 }
 
 // Response
 {
   success: true,
   data: {
-    id: string,
+    id: string,           // Time slot UUID
     consultant_id: string,
     customer_id: string,
     start_time: string,   // UTC ISO8601
     end_time: string,     // UTC ISO8601
     is_booked: true,
-    updated_at: string
+    updated_at: string    // UTC timestamp
   }
 }
 ```
 
-### Delete Time Slot
+### 4. Delete Time Slot
+Delete an unbooked time slot.
+
 ```javascript
 DELETE /time-slots/:slotId
+
+// URL Parameters
+slotId: string            // Valid time slot UUID
 
 // Response
 {
@@ -125,16 +149,16 @@ DELETE /time-slots/:slotId
 }
 ```
 
-## Time Zone Examples
+## Timezone Examples
 
-### Using Timezone Parameter
+### Example 1: Using Timezone Parameter
 ```javascript
 // Request
 {
-  "consultant_id": "27146189-b9e6-4654-8f06-b0206b0ba886",
-  "start_time": "2025-03-26T08:00:00",  // Local time
-  "end_time": "2025-03-26T09:00:00",    // Local time
-  "timezone": "Asia/Kolkata"            // IST (+5:30)
+  "consultant_id": "valid-consultant-uuid",
+  "start_time": "2025-03-26T08:00:00",    // Local time
+  "end_time": "2025-03-26T09:00:00",      // Local time
+  "timezone": "Asia/Kolkata"              // IST (+5:30)
 }
 
 // Response
@@ -147,19 +171,21 @@ DELETE /time-slots/:slotId
 }
 ```
 
-### Using ISO8601 with Offset
+### Example 2: Using ISO8601 with Offset
 ```javascript
 // Request
 {
-  "consultant_id": "27146189-b9e6-4654-8f06-b0206b0ba886",
+  "consultant_id": "valid-consultant-uuid",
   "start_time": "2025-03-26T08:00:00+05:30",  // IST with offset
   "end_time": "2025-03-26T09:00:00+05:30"     // IST with offset
 }
 
-// Response same as above
+// Response same as Example 1
 ```
 
-## Error Responses
+## Error Handling
+
+### Error Response Format
 ```javascript
 {
   success: false,
@@ -169,13 +195,16 @@ DELETE /time-slots/:slotId
 ```
 
 ### Common Error Codes
-- 400: Bad Request (validation errors)
-- 404: Not Found
-- 409: Conflict (e.g., slot already booked)
-- 500: Internal Server Error
+| Code | Description | Example Scenario |
+|------|-------------|-----------------|
+| 400  | Bad Request | Invalid UUID format, Invalid time format |
+| 404  | Not Found   | Time slot or consultant not found |
+| 409  | Conflict    | Slot already booked, Overlapping slots |
+| 500  | Server Error| Database connection failed |
 
-## Notes
-- All times are stored and returned in UTC
-- Client should handle timezone conversion for display
-- DST transitions are handled automatically
-- Overlapping slots are not allowed for the same consultant 
+## Important Notes
+- All responses return times in UTC format
+- Overlapping slots are not allowed for the same consultant
+- Booked slots cannot be deleted
+- Time slots must be created with valid consultant UUIDs
+- Reservations must be made with valid customer UUIDs 
