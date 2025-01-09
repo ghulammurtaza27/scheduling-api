@@ -123,17 +123,17 @@ class TimeSlotService {
    * @param {string} [query.consultant_id] - Filter by consultant
    * @param {string} [query.start_date] - Filter by start date
    * @param {string} [query.end_date] - Filter by end date
+   * @param {string} [query.date] - Filter by date
    * @param {string} [query.month] - Filter by month (YYYY-MM)
    * @param {number} [query.page=1] - Page number
    * @param {number} [query.limit] - Results per page
    * @returns {Promise<Object>} Paginated time slots, sorted by start_time ascending
    */
   async getTimeSlots(query) {
-    const { consultant_id, start_date, end_date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT } = query;
+    const { consultant_id, start_date, end_date, date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT } = query;
     const limitNum = Math.min(parseInt(limit), PAGINATION.MAX_LIMIT);
     const offset = (Math.max(1, parseInt(page)) - 1) * limitNum;
     
-    // Build WHERE clause
     const conditions = [];
     const params = [];
     let paramCount = 1;
@@ -143,14 +143,23 @@ class TimeSlotService {
       params.push(consultant_id);
     }
 
-    if (start_date) {
-      conditions.push(`DATE(ts.start_time) >= $${paramCount++}`);
-      params.push(start_date);
-    }
+    // Handle single date query
+    if (date) {
+      conditions.push(`
+        DATE(ts.start_time AT TIME ZONE 'UTC') = $${paramCount++}::date
+      `);
+      params.push(date);
+    } else {
+      // Only apply start_date and end_date if date is not provided
+      if (start_date) {
+        conditions.push(`ts.start_time >= $${paramCount++}::date`);
+        params.push(start_date);
+      }
 
-    if (end_date) {
-      conditions.push(`DATE(ts.start_time) <= $${paramCount++}`);
-      params.push(end_date);
+      if (end_date) {
+        conditions.push(`ts.start_time < ($${paramCount++}::date + interval '1 day')`);
+        params.push(end_date);
+      }
     }
 
     if (month) {
