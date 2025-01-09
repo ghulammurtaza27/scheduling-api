@@ -127,16 +127,33 @@ class TimeSlotService {
    * @param {string} [query.month] - Filter by month (YYYY-MM)
    * @param {number} [query.page=1] - Page number
    * @param {number} [query.limit] - Results per page
+   * @param {boolean} [query.show_booked=false] - Show booked slots
    * @returns {Promise<Object>} Paginated time slots, sorted by start_time ascending
    */
   async getTimeSlots(query) {
-    const { consultant_id, start_date, end_date, date, month, page = 1, limit = PAGINATION.DEFAULT_LIMIT } = query;
+    const { 
+      consultant_id, 
+      start_date, 
+      end_date, 
+      date, 
+      month, 
+      page = 1, 
+      limit = PAGINATION.DEFAULT_LIMIT,
+      show_booked = false
+    } = query;
+    
     const limitNum = Math.min(parseInt(limit), PAGINATION.MAX_LIMIT);
     const offset = (Math.max(1, parseInt(page)) - 1) * limitNum;
     
     const conditions = [];
     const params = [];
     let paramCount = 1;
+
+    if (!show_booked) {
+      conditions.push(`ts.is_booked = false`);
+    }
+
+    conditions.push(`ts.is_cancelled = false`);
 
     if (consultant_id) {
       conditions.push(`ts.consultant_id = $${paramCount++}`);
@@ -166,6 +183,9 @@ class TimeSlotService {
       conditions.push(`TO_CHAR(ts.start_time, 'YYYY-MM') = $${paramCount++}`);
       params.push(month);
     }
+
+    // Add condition to only show future slots
+    conditions.push(`ts.start_time > NOW()`);
 
     // Get paginated results first
     const finalQuery = `
